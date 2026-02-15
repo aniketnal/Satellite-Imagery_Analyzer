@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  }
+  
+  code {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+@layer components {
+  .earth-sphere {
+    width: 300px;
+    height: 300px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #4da6ff 0%, #0066cc 50%, #003d7a 100%);
+    position: relative;
+    box-shadow: 
+      inset -25px -25px 40px rgba(0, 0, 0, 0.5),
+      0 0 50px rgba(77, 166, 255, 0.3),
+      0 0 100px rgba(77, 166, 255, 0.2);
+    animation: rotate-earth 30s linear infinite;
+  }
+
+  .earth-sphere::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: 
+      radial-gradient(circle at 20% 50%, transparent 0%, rgba(34, 139, 34, 0.8) 20%, transparent 30%),
+      radial-gradient(circle at 60% 30%, transparent 0%, rgba(34, 139, 34, 0.7) 15%, transparent 25%),
+      radial-gradient(circle at 70% 70%, transparent 0%, rgba(34, 139, 34, 0.6) 18%, transparent 28%);
+  }
+
+  .earth-sphere::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.3) 0%, transparent 50%);
+  }
+
+  .leaflet-container {
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+}
