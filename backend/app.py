@@ -1,29 +1,78 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import ee
+import os
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
 
-ee.Initialize(project='satellite-imagery-analyzer')
-
 stored_geometry = None
+ee_init_error = None
+
+
+def initialize_earth_engine():
+    global ee_init_error
+
+    project = 'satellite-imagery-analyzer'
+    try:
+        if project:
+            ee.Initialize(project=project)
+        else:
+            ee.Initialize()
+        ee_init_error = None
+    except Exception as exc:
+        ee_init_error = str(exc)
+        print("Earth Engine initialization failed:")
+        print(ee_init_error)
+
+
+def build_geometry_from_coordinates(coords):
+    if not isinstance(coords, list) or len(coords) < 3:
+        raise ValueError("Please provide at least 3 coordinate points.")
+
+    fixed = []
+    for point in coords:
+        if not isinstance(point, list) or len(point) != 2:
+            raise ValueError("Each coordinate must be [lat, lng].")
+        fixed.append([point[1], point[0]])
+
+    if fixed[0] != fixed[-1]:
+        fixed.append(fixed[0])
+
+    return ee.Geometry.Polygon([fixed]).simplify(50), fixed
+
+
+def parse_period_years(period_value):
+    if period_value == "current" or period_value is None:
+        return 1
+
+    try:
+        years = int(period_value)
+    except (TypeError, ValueError):
+        years = 5
+
+    return max(1, years)
+
+
+initialize_earth_engine()
 
 # ---------------- SET COORDINATES ----------------
+
 
 @app.route("/set-coordinates", methods=["POST"])
 def set_coordinates():
     global stored_geometry
 
-    coords = request.json["coordinates"]
+    if ee_init_error:
+        return jsonify({"error": f"Earth Engine not initialized: {ee_init_error}"}), 500
 
-    # Convert [lat,lng] to [lng,lat] for GEE
-    fixed = [[c[1], c[0]] for c in coords]
+    coords = (request.json or {}).get("coordinates")
 
-    # Close polygon (first and last coord must match for GEE)
-    if fixed[0] != fixed[-1]:
-        fixed.append(fixed[0])
+    try:
+        geometry, fixed = build_geometry_from_coordinates(coords)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     # Log final coordinates exactly as sent to GEE
     print("\n==================== COORDINATES SENT TO GEE ====================")
@@ -33,16 +82,16 @@ def set_coordinates():
         print(f"  Point {i + 1}: lng={point[0]}, lat={point[1]}{label}")
     print("==================================================================\n")
 
-    stored_geometry = ee.Geometry.Polygon([fixed]).simplify(50)
-
     # ---- AREA LIMITER (km²) ----
-    area = stored_geometry.area().divide(1e6).getInfo()
+    area = geometry.area().divide(1e6).getInfo()
 
     if area > 50:
         stored_geometry = None
         return jsonify({
-            "error": "Selected area too large. Please select under 10 km²."
+            "error": "Selected area too large. Please select under 50 km²."
         }), 400
+
+    stored_geometry = geometry
 
     return jsonify({
         "status": "geometry stored",
@@ -98,27 +147,46 @@ def get_multi_image():
 
 # ---------------- ANALYSIS ----------------
 
-@app.route("/run-analysis", methods=["GET"])
+@app.route("/run-analysis", methods=["GET", "POST"])
 def run_analysis():
     global stored_geometry
 
-    if stored_geometry is None:
+    if ee_init_error:
+        return jsonify({"error": f"Earth Engine not initialized: {ee_init_error}"}), 500
+
+    payload = request.get_json(silent=True) or {}
+
+    analysis_geometry = stored_geometry
+    if request.method == "POST" and payload.get("coordinates"):
+        try:
+            analysis_geometry, _ = build_geometry_from_coordinates(payload.get("coordinates"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    if analysis_geometry is None:
         return jsonify({"error": "geometry not set"}), 400
 
+    area = analysis_geometry.area().divide(1e6).getInfo()
+    if area > 50:
+        return jsonify({"error": "Selected area too large. Please select under 50 km²."}), 400
+
+    period_years = parse_period_years(payload.get("period"))
+
     collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-        .filterBounds(stored_geometry)
+        .filterBounds(analysis_geometry)
 
     today = datetime.today()
-    past = today - timedelta(days=365 * 5)
+    recent_start = today - timedelta(days=365 * period_years)
+    old_start = recent_start - timedelta(days=365 * period_years)
 
     recent = collection.filterDate(
-        past.strftime("%Y-%m-%d"),
+        recent_start.strftime("%Y-%m-%d"),
         today.strftime("%Y-%m-%d")
     ).median()
 
     old = collection.filterDate(
-        (past - timedelta(days=365)).strftime("%Y-%m-%d"),
-        past.strftime("%Y-%m-%d")
+        old_start.strftime("%Y-%m-%d"),
+        recent_start.strftime("%Y-%m-%d")
     ).median()
 
     ndvi_recent = recent.normalizedDifference(["B8", "B4"])
@@ -132,19 +200,22 @@ def run_analysis():
 
     veg = veg_change.reduceRegion(
         reducer=ee.Reducer.mean(),
-        geometry=stored_geometry,
+        geometry=analysis_geometry,
         scale=120,
         bestEffort=True,
         maxPixels=1e8
-    ).getInfo()["nd"]
+    ).getInfo().get("nd")
 
     urban = urban_change.reduceRegion(
         reducer=ee.Reducer.mean(),
-        geometry=stored_geometry,
+        geometry=analysis_geometry,
         scale=120,
         bestEffort=True,
         maxPixels=1e8
-    ).getInfo()["nd"]
+    ).getInfo().get("nd")
+
+    if veg is None or urban is None:
+        return jsonify({"error": "Could not compute analysis values for selected region/time."}), 400
 
     veg_percent = round(veg * 100, 2)
     urban_percent = round(urban * 100, 2)
@@ -157,6 +228,8 @@ def run_analysis():
     return jsonify({
         "vegetation_change_percent": veg_percent,
         "urban_change_percent": urban_percent,
+        "period_years": period_years,
+        "area_km2": round(area, 2),
         "status": "completed"
     })
 

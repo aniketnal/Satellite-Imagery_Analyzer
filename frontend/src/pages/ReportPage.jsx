@@ -7,7 +7,7 @@ import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Cart
 export default function ReportPage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { area, params, period } = location.state || {}
+  const { area, params, period, analysisResult } = location.state || {}
 
   // Dummy data for demonstration
   const vegetationData = [
@@ -46,36 +46,29 @@ export default function ReportPage() {
     alert('Report download functionality will be implemented here')
   }
 
+  const vegetationChange = analysisResult?.vegetation_change_percent
+  const urbanChange = analysisResult?.urban_change_percent
+
   const metrics = [
-    {
-      title: 'Vegetation Cover',
-      value: '54%',
-      change: -14,
-      trend: 'down',
-      description: '14% decrease over selected period'
+    params?.vegetation && {
+      title: 'Vegetation Change',
+      value: vegetationChange !== undefined ? `${vegetationChange}%` : 'N/A',
+      change: Math.abs(vegetationChange || 0),
+      trend: vegetationChange > 0 ? 'up' : vegetationChange < 0 ? 'down' : 'flat',
+      description: vegetationChange !== undefined
+        ? 'Compared to previous equivalent period'
+        : 'No vegetation value returned'
     },
-    {
-      title: 'Urban Development',
-      value: '35%',
-      change: 12,
-      trend: 'up',
-      description: '12% increase in urban areas'
+    params?.urbanization && {
+      title: 'Urban Change',
+      value: urbanChange !== undefined ? `${urbanChange}%` : 'N/A',
+      change: Math.abs(urbanChange || 0),
+      trend: urbanChange > 0 ? 'up' : urbanChange < 0 ? 'down' : 'flat',
+      description: urbanChange !== undefined
+        ? 'Compared to previous equivalent period'
+        : 'No urban value returned'
     },
-    {
-      title: 'Water Bodies',
-      value: '28 km²',
-      change: -17,
-      trend: 'down',
-      description: '17 km² reduction detected'
-    },
-    {
-      title: 'Deforestation',
-      value: '41 km²',
-      change: 8,
-      trend: 'up',
-      description: '8 km² forest loss recorded'
-    }
-  ]
+  ].filter(Boolean)
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -113,10 +106,21 @@ export default function ReportPage() {
             <div className="space-y-2 text-sm">
               <p><strong>Analysis Date:</strong> {new Date().toLocaleDateString()}</p>
               <p><strong>Time Period:</strong> {period === 'current' ? 'Current' : `Last ${period} Years`}</p>
+              <p><strong>Area:</strong> {analysisResult?.area_km2 || area?.areaSqKm || 'N/A'} km²</p>
               <p><strong>Parameters Analyzed:</strong> {Object.keys(params || {}).filter(k => params[k]).map(k => k.charAt(0).toUpperCase() + k.slice(1)).join(', ')}</p>
             </div>
           </CardContent>
         </Card>
+
+        {analysisResult && (
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-sm text-slate-700">
+                Live backend result: vegetation change <strong>{analysisResult.vegetation_change_percent}%</strong>, urban change <strong>{analysisResult.urban_change_percent}%</strong>.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Key Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
