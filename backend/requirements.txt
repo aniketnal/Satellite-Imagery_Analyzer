@@ -1,3 +1,5 @@
 Flask
 earthengine-api
 flask-cors
+google-generativeai
+python-dotenv

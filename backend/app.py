@@ -3,6 +3,9 @@ from flask_cors import CORS
 import ee
 import os
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -53,6 +56,55 @@ def parse_period_years(period_value):
         years = 5
 
     return max(1, years)
+
+
+def get_gemini_insights(area_km2, period_years, vegetation_change, urban_change, water_change):
+    api_key = os.getenv("GEMINI_API_KEY")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not configured on the server.")
+
+    try:
+        genai = __import__("google.generativeai", fromlist=["GenerativeModel"])
+    except Exception:
+        raise ValueError("Gemini SDK is not installed on the server.")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+
+    prompt = f"""
+You are an environmental planning analyst.
+Given this satellite change data, provide actionable insights.
+
+Area (km²): {area_km2}
+Comparison period (years): {period_years}
+Vegetation change (%): {vegetation_change}
+Urban change (%): {urban_change}
+Water change (%): {water_change}
+
+Return strict JSON with this schema only:
+{{
+  "summary": "short 1-2 sentence interpretation",
+  "key_findings": ["3 to 5 concise findings"],
+  "recommendations": ["3 to 5 actionable recommendations"]
+}}
+
+Rules:
+- No markdown
+- No extra keys
+- Recommendations must be specific and practical for city planners
+"""
+
+    response = model.generate_content(prompt)
+    text = (response.text or "").strip()
+
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+
+    return text
 
 
 initialize_earth_engine()
@@ -195,8 +247,12 @@ def run_analysis():
     ndbi_recent = recent.normalizedDifference(["B11", "B8"])
     ndbi_old = old.normalizedDifference(["B11", "B8"])
 
+    ndwi_recent = recent.normalizedDifference(["B3", "B8"])
+    ndwi_old = old.normalizedDifference(["B3", "B8"])
+
     veg_change = ndvi_recent.subtract(ndvi_old)
     urban_change = ndbi_recent.subtract(ndbi_old)
+    water_change = ndwi_recent.subtract(ndwi_old)
 
     veg = veg_change.reduceRegion(
         reducer=ee.Reducer.mean(),
@@ -214,24 +270,73 @@ def run_analysis():
         maxPixels=1e8
     ).getInfo().get("nd")
 
-    if veg is None or urban is None:
+    water = water_change.reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=analysis_geometry,
+        scale=120,
+        bestEffort=True,
+        maxPixels=1e8
+    ).getInfo().get("nd")
+
+    if veg is None or urban is None or water is None:
         return jsonify({"error": "Could not compute analysis values for selected region/time."}), 400
 
     veg_percent = round(veg * 100, 2)
     urban_percent = round(urban * 100, 2)
+    water_percent = round(water * 100, 2)
 
     print("\n==================== ANALYSIS RESULTS ====================")
     print(f"Vegetation Change (%): {veg_percent}")
     print(f"Urban Change (%)     : {urban_percent}")
+    print(f"Water Change (%)     : {water_percent}")
     print("==========================================================\n")
 
     return jsonify({
         "vegetation_change_percent": veg_percent,
         "urban_change_percent": urban_percent,
+        "water_change_percent": water_percent,
         "period_years": period_years,
         "area_km2": round(area, 2),
         "status": "completed"
     })
+
+
+@app.route("/generate-insights", methods=["POST"])
+def generate_insights():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        area_km2 = float(payload.get("area_km2"))
+        period_years = int(payload.get("period_years"))
+        vegetation_change = float(payload.get("vegetation_change_percent"))
+        urban_change = float(payload.get("urban_change_percent"))
+        water_change = float(payload.get("water_change_percent"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid or missing analysis values."}), 400
+
+    try:
+        insights_text = get_gemini_insights(
+            area_km2=area_km2,
+            period_years=period_years,
+            vegetation_change=vegetation_change,
+            urban_change=urban_change,
+            water_change=water_change
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:
+        return jsonify({"error": f"Failed to generate insights: {str(exc)}"}), 500
+
+    try:
+        import json
+        insights = json.loads(insights_text)
+    except Exception:
+        return jsonify({"error": "Gemini returned an invalid response format."}), 500
+
+    if not isinstance(insights, dict):
+        return jsonify({"error": "Gemini response is not a valid object."}), 500
+
+    return jsonify({"insights": insights})
 
 
 if __name__ == "__main__":

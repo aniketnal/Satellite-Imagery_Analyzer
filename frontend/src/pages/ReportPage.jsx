@@ -1,46 +1,20 @@
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/Card'
-import { ArrowLeft, Download, TrendingUp, TrendingDown, Minus } from 'lucide-react'
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { ArrowLeft, Download, TrendingUp, TrendingDown, Minus, Loader, AlertCircle } from 'lucide-react'
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+
+const BACKEND_URL = 'http://localhost:5000'
 
 export default function ReportPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const { area, params, period, analysisResult } = location.state || {}
 
-  // Dummy data for demonstration
-  const vegetationData = [
-    { year: '2020', value: 68 },
-    { year: '2021', value: 65 },
-    { year: '2022', value: 62 },
-    { year: '2023', value: 59 },
-    { year: '2024', value: 56 },
-    { year: '2025', value: 54 },
-  ]
-
-  const urbanizationData = [
-    { category: 'Residential', value: 35, color: '#3b82f6' },
-    { category: 'Commercial', value: 25, color: '#8b5cf6' },
-    { category: 'Industrial', value: 20, color: '#f59e0b' },
-    { category: 'Green Space', value: 20, color: '#10b981' },
-  ]
-
-  const waterBodiesData = [
-    { month: 'Jan', area: 45 },
-    { month: 'Feb', area: 42 },
-    { month: 'Mar', area: 38 },
-    { month: 'Apr', area: 35 },
-    { month: 'May', area: 32 },
-    { month: 'Jun', area: 28 },
-  ]
-
-  const deforestationData = [
-    { region: 'North', loss: 12 },
-    { region: 'South', loss: 8 },
-    { region: 'East', loss: 15 },
-    { region: 'West', loss: 6 },
-  ]
+  const [insights, setInsights] = useState(null)
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const [insightsError, setInsightsError] = useState('')
 
   const handleDownload = () => {
     alert('Report download functionality will be implemented here')
@@ -48,6 +22,84 @@ export default function ReportPage() {
 
   const vegetationChange = analysisResult?.vegetation_change_percent
   const urbanChange = analysisResult?.urban_change_percent
+  const waterChange = analysisResult?.water_change_percent
+
+  const metricRows = useMemo(() => {
+    const rows = []
+
+    if (params?.vegetation && vegetationChange !== undefined) {
+      rows.push({ name: 'Vegetation', value: Number(vegetationChange) })
+    }
+    if (params?.urbanization && urbanChange !== undefined) {
+      rows.push({ name: 'Urban', value: Number(urbanChange) })
+    }
+    if (params?.waterBodies && waterChange !== undefined) {
+      rows.push({ name: 'Water', value: Number(waterChange) })
+    }
+
+    return rows
+  }, [params, vegetationChange, urbanChange, waterChange])
+
+  const trendComposition = useMemo(() => {
+    const increased = metricRows.filter(item => item.value > 0).length
+    const decreased = metricRows.filter(item => item.value < 0).length
+    const stable = metricRows.filter(item => item.value === 0).length
+
+    return [
+      { name: 'Increasing', value: increased, color: '#ef4444' },
+      { name: 'Decreasing', value: decreased, color: '#10b981' },
+      { name: 'Stable', value: stable, color: '#94a3b8' },
+    ].filter(item => item.value > 0)
+  }, [metricRows])
+
+  useEffect(() => {
+    const canRequestInsights =
+      analysisResult &&
+      analysisResult.area_km2 !== undefined &&
+      analysisResult.period_years !== undefined &&
+      analysisResult.vegetation_change_percent !== undefined &&
+      analysisResult.urban_change_percent !== undefined &&
+      analysisResult.water_change_percent !== undefined
+
+    if (!canRequestInsights) {
+      return
+    }
+
+    const fetchInsights = async () => {
+      setInsightsLoading(true)
+      setInsightsError('')
+
+      try {
+        const response = await fetch(`${BACKEND_URL}/generate-insights`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            area_km2: analysisResult.area_km2,
+            period_years: analysisResult.period_years,
+            vegetation_change_percent: analysisResult.vegetation_change_percent,
+            urban_change_percent: analysisResult.urban_change_percent,
+            water_change_percent: analysisResult.water_change_percent,
+          })
+        })
+
+        const data = await response.json()
+        if (!response.ok) {
+          setInsightsError(data.error || 'Failed to generate AI insights.')
+          return
+        }
+
+        setInsights(data.insights || null)
+      } catch (error) {
+        setInsightsError('Could not reach the server to generate AI insights.')
+      } finally {
+        setInsightsLoading(false)
+      }
+    }
+
+    fetchInsights()
+  }, [analysisResult])
 
   const metrics = [
     params?.vegetation && {
@@ -67,6 +119,15 @@ export default function ReportPage() {
       description: urbanChange !== undefined
         ? 'Compared to previous equivalent period'
         : 'No urban value returned'
+    },
+    params?.waterBodies && {
+      title: 'Water Change',
+      value: waterChange !== undefined ? `${waterChange}%` : 'N/A',
+      change: Math.abs(waterChange || 0),
+      trend: waterChange > 0 ? 'up' : waterChange < 0 ? 'down' : 'flat',
+      description: waterChange !== undefined
+        ? 'Compared to previous equivalent period'
+        : 'No water value returned'
     },
   ].filter(Boolean)
 
@@ -116,7 +177,7 @@ export default function ReportPage() {
           <Card>
             <CardContent className="p-4">
               <p className="text-sm text-slate-700">
-                Live backend result: vegetation change <strong>{analysisResult.vegetation_change_percent}%</strong>, urban change <strong>{analysisResult.urban_change_percent}%</strong>.
+                Live backend result: vegetation change <strong>{analysisResult.vegetation_change_percent}%</strong>, urban change <strong>{analysisResult.urban_change_percent}%</strong>, water change <strong>{analysisResult.water_change_percent}%</strong>.
               </p>
             </CardContent>
           </Card>
@@ -151,132 +212,101 @@ export default function ReportPage() {
 
         {/* Charts Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Vegetation Trend */}
-          {params?.vegetation && (
+          {metricRows.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Vegetation Health Trend</CardTitle>
+                <CardTitle>Change by Index (%)</CardTitle>
               </CardHeader>
               <CardContent>
                 <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={vegetationData}>
+                  <BarChart data={metricRows}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="year" stroke="#64748b" />
+                    <XAxis dataKey="name" stroke="#64748b" />
                     <YAxis stroke="#64748b" />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} name="Coverage %" />
-                  </LineChart>
+                    <Bar dataKey="value" fill="#3b82f6" name="Change %" />
+                  </BarChart>
                 </ResponsiveContainer>
               </CardContent>
             </Card>
           )}
 
-          {/* Urbanization Distribution */}
-          {params?.urbanization && (
+          {trendComposition.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Urban Development Distribution</CardTitle>
+                <CardTitle>Trend Direction Mix</CardTitle>
               </CardHeader>
               <CardContent>
                 <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
                     <Pie
-                      data={urbanizationData}
+                      data={trendComposition}
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={(entry) => `${entry.category} ${entry.value}%`}
+                      label={(entry) => `${entry.name}: ${entry.value}`}
                       outerRadius={100}
-                      fill="#8884d8"
                       dataKey="value"
                     >
-                      {urbanizationData.map((entry, index) => (
+                      {trendComposition.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={entry.color} />
                       ))}
                     </Pie>
                     <Tooltip />
+                    <Legend />
                   </PieChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Water Bodies Change */}
-          {params?.waterBodies && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Water Bodies Area Change</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={waterBodiesData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="month" stroke="#64748b" />
-                    <YAxis stroke="#64748b" />
-                    <Tooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="area" stroke="#3b82f6" strokeWidth={2} name="Area (km²)" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Deforestation by Region */}
-          {params?.deforestation && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Deforestation by Region</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={deforestationData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="region" stroke="#64748b" />
-                    <YAxis stroke="#64748b" />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="loss" fill="#ef4444" name="Forest Loss (km²)" />
-                  </BarChart>
                 </ResponsiveContainer>
               </CardContent>
             </Card>
           )}
         </div>
 
-        {/* Detailed Analysis */}
+        {/* AI Insights */}
         <Card>
           <CardHeader>
-            <CardTitle>Detailed Analysis</CardTitle>
+            <CardTitle>Actionable Insights (Gemini)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-2">Key Findings:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-slate-700">
-                <li>Significant vegetation decline observed in the selected area over the analysis period</li>
-                <li>Urban development has increased by 12%, primarily in residential zones</li>
-                <li>Water bodies show seasonal variation with overall decreasing trend</li>
-                <li>Deforestation concentrated in eastern regions requiring immediate attention</li>
-              </ul>
-            </div>
-            
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-2">Recommendations:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-slate-700">
-                <li>Implement reforestation programs in high-loss areas</li>
-                <li>Monitor water body levels and implement conservation measures</li>
-                <li>Plan sustainable urban development to balance growth and environment</li>
-                <li>Establish protected zones to prevent further deforestation</li>
-              </ul>
-            </div>
+            {insightsLoading && (
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <Loader className="h-4 w-4 animate-spin" />
+                Generating insights from Gemini...
+              </div>
+            )}
 
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-4">
-              <p className="text-sm text-amber-900">
-                <strong>Note:</strong> This analysis is based on satellite imagery data processed using 
-                advanced algorithms. For critical decision-making, please verify with on-ground surveys.
-              </p>
-            </div>
+            {!insightsLoading && insightsError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5" />
+                <span>{insightsError}</span>
+              </div>
+            )}
+
+            {!insightsLoading && !insightsError && insights && (
+              <>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <p className="text-sm text-blue-900">{insights.summary}</p>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-slate-900 mb-2">Key Findings</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-slate-700">
+                    {(insights.key_findings || []).map((item, index) => (
+                      <li key={`finding-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold text-slate-900 mb-2">Recommendations</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-slate-700">
+                    {(insights.recommendations || []).map((item, index) => (
+                      <li key={`recommendation-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
