@@ -137,16 +137,6 @@ export default function Dashboard() {
       return
     }
 
-    if (!geometryConfirmed) {
-      alert('Area is still being sent to the server. Please wait.')
-      return
-    }
-
-    if (coordStatus === 'error') {
-      alert('There was an error sending your area to the server. Please redraw.')
-      return
-    }
-
     const selectedParams = Object.keys(analysisParams).filter(key => analysisParams[key])
     if (selectedParams.length === 0) {
       alert('Please select at least one analysis parameter')
@@ -158,7 +148,17 @@ export default function Dashboard() {
     // Run analysis on backend
     setAnalysisLoading(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/run-analysis`)
+      const response = await fetch(`${BACKEND_URL}/run-analysis`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          coordinates: latestShape.points,
+          period: timePeriod,
+          parameters: selectedParams
+        })
+      })
       const data = await response.json()
 
       if (!response.ok) {
