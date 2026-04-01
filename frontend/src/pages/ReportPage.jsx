@@ -36,7 +36,7 @@ export default function ReportPage() {
       fetchAnalysis()
     } else {
       fetchMultiImages()
-      fetchInsights()
+      fetchInsights(analysisData)
     }
   }, [])
 
@@ -49,7 +49,7 @@ export default function ReportPage() {
       })
       setAnalysisData(response.data)
       fetchMultiImages()
-      fetchInsights()
+      fetchInsights(response.data)
     } catch (error) {
       console.error('Analysis error:', error)
       alert('Failed to fetch analysis data')
@@ -76,17 +76,19 @@ export default function ReportPage() {
     }
   }
 
-  const fetchInsights = async () => {
-    if (!analysisData) return
+  const fetchInsights = async (analysisPayload = analysisData) => {
+    if (!analysisPayload) return
     
     setLoadingInsights(true)
     try {
       const response = await axios.post(`${API_BASE}/generate-insights`, {
-        area_km2: analysisData.area_km2,
-        period_years: analysisData.period_years,
-        vegetation_change_percent: analysisData.vegetation_change_percent,
-        urban_change_percent: analysisData.urban_change_percent,
-        water_change_percent: analysisData.water_change_percent
+        area_km2: analysisPayload.area_km2,
+        period_years: analysisPayload.period_years,
+        vegetation_change_percent: analysisPayload.vegetation_change_percent,
+        urban_change_percent: analysisPayload.urban_change_percent,
+        water_change_percent: analysisPayload.water_change_percent,
+        uss_score: analysisPayload.uss_score,
+        uss_label: analysisPayload.uss_label
       })
       setInsights(response.data.insights)
     } catch (error) {
@@ -143,7 +145,8 @@ export default function ReportPage() {
       const metrics = [
         { label: 'Vegetation Change', value: `${analysisData.vegetation_change_percent}%`, color: analysisData.vegetation_change_percent < 0 ? [239, 68, 68] : [34, 197, 94] },
         { label: 'Urban Development', value: `${analysisData.urban_change_percent}%`, color: analysisData.urban_change_percent > 0 ? [59, 130, 246] : [107, 114, 128] },
-        { label: 'Water Bodies Change', value: `${analysisData.water_change_percent}%`, color: analysisData.water_change_percent < 0 ? [239, 68, 68] : [59, 130, 246] }
+        { label: 'Water Bodies Change', value: `${analysisData.water_change_percent}%`, color: analysisData.water_change_percent < 0 ? [239, 68, 68] : [59, 130, 246] },
+        { label: 'USS Score', value: `${analysisData.uss_score ?? ussScore}/100`, color: ussScore >= 80 ? [5, 150, 105] : ussScore >= 60 ? [34, 197, 94] : ussScore >= 40 ? [217, 119, 6] : [220, 38, 38] }
       ]
       
       metrics.forEach(metric => {
@@ -284,6 +287,12 @@ export default function ReportPage() {
     )
   }
 
+  const ussScore = Number(analysisData.uss_score ?? 0)
+  const ussLabel = analysisData.uss_label || 'Sustainability score'
+  const ussInterpretation = analysisData.uss_interpretation || 'Higher USS means more urban sustainable conditions.'
+  const ussScoreColor = ussScore >= 80 ? 'text-emerald-600' : ussScore >= 60 ? 'text-green-600' : ussScore >= 40 ? 'text-amber-600' : 'text-red-600'
+  const ussScoreBg = ussScore >= 80 ? 'bg-emerald-100' : ussScore >= 60 ? 'bg-green-100' : ussScore >= 40 ? 'bg-amber-100' : 'bg-red-100'
+
   const changeData = [
     { name: 'Vegetation', value: analysisData.vegetation_change_percent, color: analysisData.vegetation_change_percent < 0 ? '#ef4444' : '#10b981' },
     { name: 'Urban', value: analysisData.urban_change_percent, color: analysisData.urban_change_percent > 0 ? '#3b82f6' : '#6b7280' },
@@ -358,7 +367,7 @@ export default function ReportPage() {
         </Card>
 
         {/* Key Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center gap-4">
@@ -432,6 +441,35 @@ export default function ReportPage() {
                   <p className="text-xs text-slate-500 mt-1">
                     {analysisData.water_change_percent < 0 ? 'Water body reduction' : 'Water body increase'}
                   </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center gap-4">
+                <div className={`p-3 rounded-lg ${ussScoreBg}`}>
+                  {ussScore >= 50 ? (
+                    <TrendingUp className="h-6 w-6 text-emerald-600" />
+                  ) : (
+                    <TrendingDown className="h-6 w-6 text-red-600" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-slate-500">USS Score</p>
+                  <div className="flex items-center gap-2">
+                    <p className={`text-2xl font-bold ${ussScoreColor}`}>
+                      {analysisData.uss_score ?? ussScore}/100
+                    </p>
+                    {ussScore >= 50 ? (
+                      <TrendingUp className={`h-5 w-5 ${ussScoreColor}`} />
+                    ) : (
+                      <TrendingDown className={`h-5 w-5 ${ussScoreColor}`} />
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">{ussLabel}</p>
+                  <p className="text-xs text-slate-500">Higher score = more sustainable</p>
                 </div>
               </div>
             </CardContent>
@@ -591,9 +629,16 @@ export default function ReportPage() {
                 <li>Vegetation analysis using NDVI (Normalized Difference Vegetation Index)</li>
                 <li>Urban development measured using NDBI (Normalized Difference Built-up Index)</li>
                 <li>Water bodies analyzed using NDWI (Normalized Difference Water Index)</li>
+                <li>USS (Urban Sustainability Score) combines vegetation, water, urban change, and a temperature-pressure proxy</li>
                 <li>Data sources: Copernicus Sentinel-2 and Landsat 8 satellite imagery</li>
                 <li>Comparison period: {analysisData.period_years} years</li>
               </ul>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-4">
+              <p className="text-sm text-blue-900">
+                <strong>USS meaning:</strong> {ussInterpretation}
+              </p>
             </div>
 
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-4">
