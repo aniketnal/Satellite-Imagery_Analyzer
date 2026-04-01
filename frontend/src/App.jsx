@@ -4,11 +4,19 @@ import AuthPage from './pages/AuthPage'
 import Dashboard from './pages/Dashboard'
 import ProfilePage from './pages/ProfilePage'
 import ReportPage from './pages/ReportPage'
+import AdminPage from './pages/AdminPage'
+import { getCurrentUserSafe, isAdminUser } from './lib/storage'
 
 // Simple auth check
 const ProtectedRoute = ({ children }) => {
-  const user = localStorage.getItem('user')
-  return user ? children : <Navigate to="/auth" replace />
+  const user = getCurrentUserSafe()
+  return user?.id ? children : <Navigate to="/auth" replace />
+}
+
+const AdminRoute = ({ children }) => {
+  const user = getCurrentUserSafe()
+  if (!user?.id) return <Navigate to="/auth" replace />
+  return isAdminUser(user) ? children : <Navigate to="/dashboard" replace />
 }
 
 function App() {
@@ -40,6 +48,14 @@ function App() {
               <ReportPage />
             </ProtectedRoute>
           } 
+        />
+        <Route
+          path="/admin"
+          element={
+            <AdminRoute>
+              <AdminPage />
+            </AdminRoute>
+          }
         />
       </Routes>
     </BrowserRouter>

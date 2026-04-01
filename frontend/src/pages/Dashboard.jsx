@@ -5,7 +5,8 @@ import L from 'leaflet'
 import 'leaflet-draw'
 import { Button } from '@/components/Button'
 import { Card, CardContent } from '@/components/Card'
-import { Satellite, User, LogOut } from 'lucide-react'
+import { Satellite, User, LogOut, Shield } from 'lucide-react'
+import { getCurrentUserSafe, getLatestAnalysis, getUserAnalyses, isAdminUser, logoutUser, saveAnalysisForUser } from '@/lib/storage'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-draw/dist/leaflet.draw.css'
 
@@ -107,11 +108,26 @@ export default function Dashboard() {
   const [drawnShapes, setDrawnShapes] = useState([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
 
-  const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const user = getCurrentUserSafe() || {}
+  const [analysisCount, setAnalysisCount] = useState(0)
+
+  useEffect(() => {
+    if (!user.id) return
+    setAnalysisCount(getUserAnalyses(user.id).length)
+  }, [user.id])
 
   const handleLogout = () => {
-    localStorage.removeItem('user')
+    logoutUser()
     navigate('/')
+  }
+
+  const handleOpenLatest = () => {
+    const latest = getLatestAnalysis(user.id)
+    if (!latest?.reportState) {
+      alert('No saved analysis found yet.')
+      return
+    }
+    navigate('/report', { state: latest.reportState })
   }
 
   const handleAnalysis = async () => {
@@ -180,14 +196,19 @@ export default function Dashboard() {
       console.log(analysisData)
       console.log('===========================================================')
 
+      const reportState = {
+        area: latestShape,
+        params: analysisParams,
+        period: timePeriod,
+        analysisData,
+      }
+
+      saveAnalysisForUser(user.id, reportState)
+      setAnalysisCount((prev) => prev + 1)
+
       // Navigate to report page with analysis data
       navigate('/report', { 
-        state: { 
-          area: latestShape,
-          params: analysisParams,
-          period: timePeriod,
-          analysisData: analysisData
-        } 
+        state: reportState
       })
     } catch (error) {
       // Remove loading if it exists
@@ -218,7 +239,12 @@ export default function Dashboard() {
         <div className="px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Satellite className="h-7 w-7 text-blue-600" />
-            <span className="text-xl font-bold text-slate-900">Satellite Imagery Analyzer</span>
+            <button
+              onClick={() => navigate('/')}
+              className="text-xl font-bold text-slate-900 hover:text-blue-700 transition-colors"
+            >
+              Satellite Imagery Analyzer
+            </button>
           </div>
           
           <div className="relative">
@@ -244,6 +270,15 @@ export default function Dashboard() {
                   <User className="h-4 w-4" />
                   View Profile
                 </button>
+                {isAdminUser(user) ? (
+                  <button
+                    onClick={() => navigate('/admin')}
+                    className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                  >
+                    <Shield className="h-4 w-4" />
+                    Admin Panel
+                  </button>
+                ) : null}
                 <div className="border-t border-slate-200 my-1"></div>
                 <button
                   onClick={handleLogout}
@@ -350,6 +385,22 @@ export default function Dashboard() {
                 <strong>How to use:</strong> Select a tool above, then use the drawing toolbar on the map (top-right corner) to draw your area. Select parameters and click "Get Analysis".
               </p>
             </div>
+
+            <Card className="border-slate-200">
+              <CardContent className="p-4 space-y-3">
+                <h3 className="font-semibold text-slate-900">Your Activity</h3>
+                <p className="text-sm text-slate-700">
+                  Total analyses: <span className="font-semibold text-blue-600">{analysisCount}</span>
+                </p>
+                <Button
+                  onClick={handleOpenLatest}
+                  variant="outline"
+                  className="w-full"
+                >
+                  Open Latest Analysis
+                </Button>
+              </CardContent>
+            </Card>
           </div>
         </aside>
 
