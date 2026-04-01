@@ -1,11 +1,26 @@
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/Card'
-import { ArrowLeft, User, Mail, Briefcase, Calendar } from 'lucide-react'
+import { ArrowLeft, Mail, Briefcase, Calendar } from 'lucide-react'
+import { getCurrentUserSafe, getUserAnalyses, isAdminUser } from '@/lib/storage'
 
 export default function ProfilePage() {
   const navigate = useNavigate()
-  const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const user = getCurrentUserSafe() || {}
+  const analyses = useMemo(() => getUserAnalyses(user.id), [user.id])
+
+  const totalAnalyses = analyses.length
+  const totalReports = analyses.length
+  const totalAreas = analyses.reduce((sum, item) => {
+    const areaKm = Number(item?.reportState?.analysisData?.area_km2 || 0)
+    return sum + areaKm
+  }, 0)
+
+  const openSavedAnalysis = (savedItem) => {
+    if (!savedItem?.reportState) return
+    navigate('/report', { state: savedItem.reportState })
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -65,7 +80,7 @@ export default function ProfilePage() {
                   <Calendar className="h-5 w-5 text-slate-400" />
                   <div>
                     <p className="text-sm text-slate-500">Member Since</p>
-                    <p className="text-slate-900">{new Date().toLocaleDateString()}</p>
+                    <p className="text-slate-900">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}</p>
                   </div>
                 </div>
               </div>
@@ -87,6 +102,11 @@ export default function ProfilePage() {
               <Button variant="outline" className="w-full justify-start">
                 Notification Preferences
               </Button>
+              {isAdminUser(user) ? (
+                <Button variant="outline" className="w-full justify-start" onClick={() => navigate('/admin')}>
+                  Open Admin Panel
+                </Button>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -98,18 +118,54 @@ export default function ProfilePage() {
             <CardContent>
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="p-4 bg-slate-50 rounded-lg">
-                  <div className="text-2xl font-bold text-blue-600">12</div>
+                  <div className="text-2xl font-bold text-blue-600">{totalAnalyses}</div>
                   <div className="text-sm text-slate-500">Analyses</div>
                 </div>
                 <div className="p-4 bg-slate-50 rounded-lg">
-                  <div className="text-2xl font-bold text-green-600">8</div>
+                  <div className="text-2xl font-bold text-green-600">{totalReports}</div>
                   <div className="text-sm text-slate-500">Reports</div>
                 </div>
                 <div className="p-4 bg-slate-50 rounded-lg">
-                  <div className="text-2xl font-bold text-purple-600">24</div>
-                  <div className="text-sm text-slate-500">Areas Mapped</div>
+                  <div className="text-2xl font-bold text-purple-600">{totalAreas.toFixed(2)}</div>
+                  <div className="text-sm text-slate-500">Area Mapped (km²)</div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Previous Analyses</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {analyses.length === 0 ? (
+                <p className="text-sm text-slate-500">No saved analyses yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {analyses.map((item, index) => {
+                    const analysisData = item?.reportState?.analysisData || {}
+                    const period = item?.reportState?.period
+                    return (
+                      <div key={item.id || index} className="flex items-center justify-between gap-3 border border-slate-200 rounded-lg p-3">
+                        <div className="text-sm">
+                          <p className="font-semibold text-slate-900">
+                            {period === 'current' ? 'Current Year' : `Last ${period} Years`} | {analysisData.area_km2 || 0} km²
+                          </p>
+                          <p className="text-slate-500">
+                            {new Date(item.createdAt).toLocaleString()} | USS: {analysisData.uss_score ?? 'N/A'}/100
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          onClick={() => openSavedAnalysis(item)}
+                        >
+                          Open Report
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

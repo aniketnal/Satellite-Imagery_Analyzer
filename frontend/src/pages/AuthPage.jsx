@@ -1,43 +1,56 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/Card'
 import { Satellite, Mail, Lock, User, Github } from 'lucide-react'
+import { ensureHardcodedAdminAccount, getCurrentUserSafe, getHardcodedAdminCredentials, loginUser, registerUser } from '@/lib/storage'
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true)
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
   const navigate = useNavigate()
+  const adminCreds = getHardcodedAdminCredentials()
+
+  useEffect(() => {
+    ensureHardcodedAdminAccount()
+    const activeUser = getCurrentUserSafe()
+    if (activeUser?.id) {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [navigate])
+
+  const switchMode = (loginMode) => {
+    setIsLogin(loginMode)
+    setError('')
+  }
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    // Mock authentication - store user data
-    localStorage.setItem('user', JSON.stringify({
-      name: 'Development Authority',
-      email: 'authority@example.com',
-      role: 'Administrator'
-    }))
+
+    setError('')
+
+    const result = isLogin
+      ? loginUser({ email, password })
+      : registerUser({ name, email, password })
+
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+
     navigate('/dashboard')
   }
 
   const handleGoogleAuth = () => {
-    // Mock Google auth
-    localStorage.setItem('user', JSON.stringify({
-      name: 'Development Authority',
-      email: 'authority@example.com',
-      role: 'Administrator'
-    }))
-    navigate('/dashboard')
+    setError('Google auth is not connected yet. Use email/password signup/login.')
   }
 
   const handleGithubAuth = () => {
-    // Mock Github auth
-    localStorage.setItem('user', JSON.stringify({
-      name: 'Development Authority',
-      email: 'authority@example.com',
-      role: 'Administrator'
-    }))
-    navigate('/dashboard')
+    setError('GitHub auth is not connected yet. Use email/password signup/login.')
   }
 
   return (
@@ -59,14 +72,14 @@ export default function AuthPage() {
             <div className="flex justify-center gap-2 mb-4">
               <Button
                 variant={isLogin ? "default" : "ghost"}
-                onClick={() => setIsLogin(true)}
+                onClick={() => switchMode(true)}
                 className={isLogin ? "bg-blue-600 hover:bg-blue-700" : "text-slate-300 hover:text-white hover:bg-slate-700"}
               >
                 Sign In
               </Button>
               <Button
                 variant={!isLogin ? "default" : "ghost"}
-                onClick={() => setIsLogin(false)}
+                onClick={() => switchMode(false)}
                 className={!isLogin ? "bg-blue-600 hover:bg-blue-700" : "text-slate-300 hover:text-white hover:bg-slate-700"}
               >
                 Register
@@ -80,6 +93,12 @@ export default function AuthPage() {
                 ? 'Enter your credentials to access the platform' 
                 : 'Register to start analyzing satellite imagery'}
             </CardDescription>
+            {error ? (
+              <p className="text-sm text-red-400 text-center">{error}</p>
+            ) : null}
+            <p className="text-xs text-slate-400 text-center">
+              Admin login: {adminCreds.email} / {adminCreds.password}
+            </p>
           </CardHeader>
           
           <CardContent className="space-y-4">
@@ -92,6 +111,8 @@ export default function AuthPage() {
                     <Input
                       type="text"
                       placeholder="John Doe"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
                       className="pl-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400"
                       required
                     />
@@ -106,6 +127,8 @@ export default function AuthPage() {
                   <Input
                     type="email"
                     placeholder="authority@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                     className="pl-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400"
                     required
                   />
@@ -119,6 +142,8 @@ export default function AuthPage() {
                   <Input
                     type="password"
                     placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
                     className="pl-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-400"
                     required
                   />
@@ -196,7 +221,7 @@ export default function AuthPage() {
         <p className="text-center text-sm text-slate-400 mt-4">
           {isLogin ? "Don't have an account? " : "Already have an account? "}
           <button
-            onClick={() => setIsLogin(!isLogin)}
+            onClick={() => switchMode(!isLogin)}
             className="text-blue-400 hover:text-blue-300 font-medium"
           >
             {isLogin ? 'Register' : 'Sign in'}

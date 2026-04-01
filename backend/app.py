@@ -58,7 +58,65 @@ def parse_period_years(period_value):
     return max(1, years)
 
 
-def get_gemini_insights(area_km2, period_years, vegetation_change, urban_change, water_change):
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def compute_uss_score(vegetation_change_percent, urban_change_percent, water_change_percent):
+    """
+    Compute a USS (Urban Sustainability Score) on a 1-100 scale.
+
+    Higher USS means more urban sustainable conditions.
+    Lower USS means less sustainable conditions and more environmental stress.
+    """
+    # Assumed weights; vegetation and water improve sustainability,
+    # while urban growth and heat-pressure proxy reduce it.
+    w1, w2, w3, w4 = 0.45, 0.30, 0.20, 0.05
+
+    # Temperature is not directly available from Sentinel-2 here, so we use a
+    # simple heat-pressure proxy based on urban expansion and vegetation loss.
+    temperature_proxy = max(0.0, urban_change_percent + max(0.0, -vegetation_change_percent))
+
+    sustainability_signal = (
+        (w1 * vegetation_change_percent)
+        + (w2 * water_change_percent)
+        - (w3 * urban_change_percent)
+        - (w4 * temperature_proxy)
+    )
+
+    score = clamp(round(50 + sustainability_signal * 2.5), 1, 100)
+
+    if score >= 80:
+        label = "Very sustainable"
+    elif score >= 60:
+        label = "Moderately sustainable"
+    elif score >= 40:
+        label = "Mixed sustainability"
+    elif score >= 20:
+        label = "Low sustainability"
+    else:
+        label = "Poor sustainability"
+
+    interpretation = (
+        "Higher USS means more urban sustainable and environmentally healthier. "
+        "Lower USS means less sustainable with stronger environmental impact."
+    )
+
+    return {
+        "uss_score": score,
+        "uss_label": label,
+        "uss_interpretation": interpretation,
+        "uss_weights": {
+            "w1": w1,
+            "w2": w2,
+            "w3": w3,
+            "w4": w4,
+        },
+        "temperature_proxy_percent": round(temperature_proxy, 2),
+    }
+
+
+def get_gemini_insights(area_km2, period_years, vegetation_change, urban_change, water_change, uss_score=None, uss_label=None):
     api_key = os.getenv("GEMINI_API_KEY")
     model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
@@ -82,6 +140,8 @@ Comparison period (years): {period_years}
 Vegetation change (%): {vegetation_change}
 Urban change (%): {urban_change}
 Water change (%): {water_change}
+USS score (1-100): {uss_score if uss_score is not None else "not provided"}
+USS label: {uss_label if uss_label else "not provided"}
 
 Return strict JSON with this schema only:
 {{
@@ -94,8 +154,15 @@ Rules:
 - No markdown
 - No extra keys
 - Recommendations must be specific and practical for city planners
+        uss_score = payload.get("uss_score")
+        uss_label = payload.get("uss_label")
 """
 
+
+    try:
+        uss_score = float(uss_score) if uss_score is not None else None
+    except (TypeError, ValueError):
+        uss_score = None
     response = model.generate_content(prompt)
     text = (response.text or "").strip()
 
@@ -103,7 +170,9 @@ Rules:
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:].strip()
-
+            water_change=water_change,
+            uss_score=uss_score,
+            uss_label=uss_label
     return text
 
 
@@ -284,17 +353,25 @@ def run_analysis():
     veg_percent = round(veg * 100, 2)
     urban_percent = round(urban * 100, 2)
     water_percent = round(water * 100, 2)
+    uss_data = compute_uss_score(veg_percent, urban_percent, water_percent)
 
     print("\n==================== ANALYSIS RESULTS ====================")
     print(f"Vegetation Change (%): {veg_percent}")
     print(f"Urban Change (%)     : {urban_percent}")
     print(f"Water Change (%)     : {water_percent}")
+    print(f"USS Score            : {uss_data['uss_score']} / 100")
+    print(f"USS Interpretation   : {uss_data['uss_interpretation']}")
     print("==========================================================\n")
 
     return jsonify({
         "vegetation_change_percent": veg_percent,
         "urban_change_percent": urban_percent,
         "water_change_percent": water_percent,
+        "uss_score": uss_data["uss_score"],
+        "uss_label": uss_data["uss_label"],
+        "uss_interpretation": uss_data["uss_interpretation"],
+        "uss_weights": uss_data["uss_weights"],
+        "temperature_proxy_percent": uss_data["temperature_proxy_percent"],
         "period_years": period_years,
         "area_km2": round(area, 2),
         "status": "completed"
