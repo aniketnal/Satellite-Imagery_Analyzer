@@ -5,11 +5,9 @@ import L from 'leaflet'
 import 'leaflet-draw'
 import { Button } from '@/components/Button'
 import { Card, CardContent } from '@/components/Card'
-import { Satellite, User, LogOut, CheckCircle, AlertCircle, Loader } from 'lucide-react'
+import { Satellite, User, LogOut } from 'lucide-react'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-draw/dist/leaflet.draw.css'
-
-const BACKEND_URL = 'http://localhost:5000'
 
 // Fix default marker icons
 delete L.Icon.Default.prototype._getIconUrl
@@ -25,19 +23,19 @@ function DrawControl({ onShapeCreated }) {
   const drawnItemsRef = useRef(null)
   const drawControlRef = useRef(null)
 
-  const MAX_AREA = 50 * 1000 * 1000
-  const MIN_ZOOM = 12
-
   useEffect(() => {
+    // Initialize feature group for drawn items
     if (!drawnItemsRef.current) {
       drawnItemsRef.current = new L.FeatureGroup()
       map.addLayer(drawnItemsRef.current)
     }
 
+    // Remove existing draw control
     if (drawControlRef.current) {
       map.removeControl(drawControlRef.current)
     }
 
+    // Create new draw control - only polygon tool
     drawControlRef.current = new L.Control.Draw({
       position: 'topright',
       edit: {
@@ -46,9 +44,15 @@ function DrawControl({ onShapeCreated }) {
       draw: {
         polygon: {
           allowIntersection: false,
+          drawError: {
+            color: '#e74c3c',
+            message: '<strong>Error:</strong> Shape edges cannot cross!'
+          },
           shapeOptions: {
             color: '#3b82f6',
-            fillOpacity: 0.3
+            fillColor: '#3b82f6',
+            fillOpacity: 0.3,
+            weight: 3
           }
         },
         rectangle: false,
@@ -61,32 +65,20 @@ function DrawControl({ onShapeCreated }) {
 
     map.addControl(drawControlRef.current)
 
+    // Handle shape creation
     const handleCreated = (e) => {
-      if (map.getZoom() < MIN_ZOOM) {
-        alert("Please zoom in further before selecting area.")
-        return
-      }
-
       const layer = e.layer
-      const area = L.GeometryUtil.geodesicArea(layer.getLatLngs()[0])
-
-      if (area > MAX_AREA) {
-        alert("Selected area too large. Please select under 50 km².")
-        return
-      }
-
-      drawnItemsRef.current.clearLayers()
       drawnItemsRef.current.addLayer(layer)
 
-      const coords = layer.getLatLngs()[0].map(p => [
-        Number(p.lat.toFixed(6)),
-        Number(p.lng.toFixed(6))
-      ])
+      let coords
+      if (e.layerType === 'polygon') {
+        coords = layer.getLatLngs()[0].map(p => [p.lat, p.lng])
+      }
 
+      // Only pass serializable data (no layer object)
       onShapeCreated({
         type: e.layerType,
-        points: coords,
-        areaSqKm: (area / 1e6).toFixed(2)
+        points: coords
       })
     }
 
@@ -103,7 +95,6 @@ function DrawControl({ onShapeCreated }) {
   return null
 }
 
-
 export default function Dashboard() {
   const navigate = useNavigate()
   const [timePeriod, setTimePeriod] = useState('current')
@@ -115,14 +106,6 @@ export default function Dashboard() {
   })
   const [drawnShapes, setDrawnShapes] = useState([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
-
-  const [analysisLoading, setAnalysisLoading] = useState(false)
-
-  // New state for backend coordinate submission
-  const [coordStatus, setCoordStatus] = useState(null) // null | 'loading' | 'success' | 'error'
-  const [coordMessage, setCoordMessage] = useState('')
-  const [confirmedAreaKm2, setConfirmedAreaKm2] = useState(null)
-  const [geometryConfirmed, setGeometryConfirmed] = useState(false)
 
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
@@ -136,87 +119,96 @@ export default function Dashboard() {
       alert('Please select an area on the map first')
       return
     }
-
+    
     const selectedParams = Object.keys(analysisParams).filter(key => analysisParams[key])
     if (selectedParams.length === 0) {
       alert('Please select at least one analysis parameter')
       return
     }
 
+    // Log the coordinates to console
+    console.log('==================== ANALYSIS REQUEST ====================')
+    console.log('Total Shapes Selected:', drawnShapes.length)
+    console.log('Latest Shape Details:')
+    
     const latestShape = drawnShapes[drawnShapes.length - 1]
+    console.log('Shape Type:', latestShape.type)
+    console.log('Coordinates:', latestShape.points)
+    
+    if (latestShape.type === 'polygon') {
+      console.log('Polygon Points:', latestShape.points.map((point, index) => ({
+        point: index + 1,
+        latitude: point[0],
+        longitude: point[1]
+      })))
+    }
+    
+    console.log('Analysis Parameters:', selectedParams)
+    console.log('Time Period:', timePeriod === 'current' ? 'Current' : `Last ${timePeriod} Years`)
+    console.log('==========================================================')
 
-    // Run analysis on backend
-    setAnalysisLoading(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/run-analysis`, {
+      // Show loading state
+      const loadingAlert = document.createElement('div')
+      loadingAlert.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]'
+      loadingAlert.innerHTML = '<div class="bg-white rounded-lg p-6 text-center"><div class="animate-spin h-12 w-12 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div><p>Analyzing satellite data...</p></div>'
+      document.body.appendChild(loadingAlert)
+
+      // Call backend API for analysis
+      const response = await fetch('http://localhost:5000/run-analysis', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           coordinates: latestShape.points,
-          period: timePeriod,
-          parameters: selectedParams
+          period: timePeriod
         })
       })
-      const data = await response.json()
+
+      document.body.removeChild(loadingAlert)
 
       if (!response.ok) {
-        alert(`Analysis failed: ${data.error}`)
+        const error = await response.json()
+        alert(error.error || 'Analysis failed')
         return
       }
 
-      navigate('/report', {
-        state: {
+      const analysisData = await response.json()
+      
+      console.log('==================== ANALYSIS RESPONSE ====================')
+      console.log(analysisData)
+      console.log('===========================================================')
+
+      // Navigate to report page with analysis data
+      navigate('/report', { 
+        state: { 
           area: latestShape,
           params: analysisParams,
           period: timePeriod,
-          analysisResult: data
-        }
+          analysisData: analysisData
+        } 
       })
-    } catch (err) {
-      alert('Could not reach the server. Is your backend running?')
-    } finally {
-      setAnalysisLoading(false)
+    } catch (error) {
+      // Remove loading if it exists
+      const loading = document.querySelector('.fixed.inset-0.bg-black\\/50')
+      if (loading) document.body.removeChild(loading)
+      
+      console.error('Analysis error:', error)
+      alert('Failed to connect to analysis server. Make sure the backend is running on http://localhost:5000')
     }
   }
 
-  const handleShapeCreated = async (shape) => {
-    setDrawnShapes(prev => [...prev, shape])
-    setGeometryConfirmed(false)
-    setCoordStatus('loading')
-    setCoordMessage('Sending coordinates to server...')
-    setConfirmedAreaKm2(null)
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/set-coordinates`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          coordinates: shape.points   // already [lat, lng] pairs — backend converts to [lng, lat]
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        // Backend returned an error (e.g. area too large)
-        setCoordStatus('error')
-        setCoordMessage(data.error || 'Failed to set coordinates.')
-        setGeometryConfirmed(false)
-      } else {
-        setCoordStatus('success')
-        setCoordMessage(`Area confirmed by server`)
-        setConfirmedAreaKm2(data.area_km2)
-        setGeometryConfirmed(true)
-      }
-    } catch (err) {
-      setCoordStatus('error')
-      setCoordMessage('Could not reach the server. Is your backend running?')
-      setGeometryConfirmed(false)
+  const handleShapeCreated = (shape) => {
+    console.log('✓ Shape Completed!')
+    console.log('Type:', shape.type)
+    console.log('Coordinates:', shape.points)
+    if (shape.type === 'polygon') {
+      console.log('Total vertices:', shape.points.length)
     }
+    console.log('---')
+    
+    setDrawnShapes([...drawnShapes, shape])
   }
 
   return (
@@ -228,7 +220,7 @@ export default function Dashboard() {
             <Satellite className="h-7 w-7 text-blue-600" />
             <span className="text-xl font-bold text-slate-900">Satellite Imagery Analyzer</span>
           </div>
-
+          
           <div className="relative">
             <button
               onClick={() => setShowProfileMenu(!showProfileMenu)}
@@ -286,33 +278,6 @@ export default function Dashboard() {
                     Use the polygon tool in the map toolbar (top-right corner) to draw your area
                   </p>
                 </div>
-
-                {/* Coordinate submission status */}
-                {coordStatus && (
-                  <div className={`rounded-lg p-3 flex items-start gap-2 text-sm
-                    ${coordStatus === 'loading' ? 'bg-slate-100 text-slate-700' : ''}
-                    ${coordStatus === 'success' ? 'bg-green-50 border border-green-200 text-green-800' : ''}
-                    ${coordStatus === 'error'   ? 'bg-red-50 border border-red-200 text-red-800' : ''}
-                  `}>
-                    {coordStatus === 'loading' && (
-                      <Loader className="h-4 w-4 mt-0.5 animate-spin shrink-0" />
-                    )}
-                    {coordStatus === 'success' && (
-                      <CheckCircle className="h-4 w-4 mt-0.5 shrink-0 text-green-600" />
-                    )}
-                    {coordStatus === 'error' && (
-                      <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-600" />
-                    )}
-                    <div>
-                      <p className="font-medium">{coordMessage}</p>
-                      {coordStatus === 'success' && confirmedAreaKm2 && (
-                        <p className="text-xs mt-0.5 text-green-700">
-                          Area: <strong>{confirmedAreaKm2} km²</strong>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
               </CardContent>
             </Card>
 
@@ -400,7 +365,7 @@ export default function Dashboard() {
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             />
-            <DrawControl
+            <DrawControl 
               onShapeCreated={handleShapeCreated}
             />
           </MapContainer>
@@ -410,21 +375,9 @@ export default function Dashboard() {
             <Button
               onClick={handleAnalysis}
               size="lg"
-              disabled={coordStatus === 'loading' || analysisLoading}
-              className={`shadow-lg transition-colors ${
-                coordStatus === 'loading' || analysisLoading
-                  ? 'bg-blue-400 cursor-not-allowed'
-                  : coordStatus === 'error'
-                  ? 'bg-red-500 hover:bg-red-600'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              }`}
+              className="bg-blue-600 hover:bg-blue-700 shadow-lg"
             >
-              {analysisLoading ? (
-                <span className="flex items-center gap-2">
-                  <Loader className="h-4 w-4 animate-spin" />
-                  Running Analysis...
-                </span>
-              ) : coordStatus === 'loading' ? 'Sending...' : 'Get Analysis'}
+              Get Analysis
             </Button>
           </div>
         </main>
