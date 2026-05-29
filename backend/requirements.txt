@@ -3,3 +3,4 @@ earthengine-api
 flask-cors
 google-genai
 python-dotenv
+werkzeug

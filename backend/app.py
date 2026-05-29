@@ -1,9 +1,22 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import ee
+import smtplib
 import os
+import ssl
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from dotenv import load_dotenv
+from supabase_db import (
+    authenticate_user,
+    get_all_analyses,
+    get_all_users_with_analyses,
+    get_user_analyses,
+    record_authority_alert,
+    register_user,
+    save_analysis_for_user,
+    seed_default_admin_user,
+)
 
 load_dotenv()
 
@@ -60,6 +73,115 @@ def parse_period_years(period_value):
 
 def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
+
+
+def _safe_float_env(name, default):
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def should_alert_authority(uss_score, vegetation_change_percent):
+    uss_threshold = _safe_float_env("AUTHORITY_ALERT_USS_THRESHOLD", "1")
+    deforestation_threshold = _safe_float_env("AUTHORITY_ALERT_DEFORESTATION_THRESHOLD", "-10")
+
+    reasons = []
+    if uss_score is not None and uss_score <= uss_threshold:
+        reasons.append(
+            f"USS score {uss_score} is at or below the configured alert threshold {uss_threshold}."
+        )
+
+    if vegetation_change_percent is not None and vegetation_change_percent <= deforestation_threshold:
+        reasons.append(
+            f"Vegetation change {vegetation_change_percent}% indicates heavy deforestation (threshold {deforestation_threshold}%)."
+        )
+
+    return reasons
+
+
+def send_authority_alert(*, area_km2, period_years, veg_percent, urban_percent, water_percent, uss_data, reasons):
+    recipient = os.getenv("AUTHORITY_ALERT_EMAIL", "nmc@gov.in")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_host = "smtp.gmail.com"
+    smtp_port = 587
+    sender = smtp_user or "no-reply@satellite-imagery-analyzer.local"
+
+    if not smtp_user or not smtp_password:
+        record_authority_alert(
+            analysis_id=None,
+            recipient_email=recipient,
+            reasons=reasons,
+            delivery_status="skipped",
+            smtp_response="SMTP_USER and SMTP_PASSWORD must be configured to send alerts.",
+        )
+        return {
+            "sent": False,
+            "delivery": "skipped",
+            "reason": "SMTP_USER and SMTP_PASSWORD must be configured to send alerts.",
+        }
+
+    message = EmailMessage()
+    message["Subject"] = f"[Satellite Imagery Analyzer] Authority alert for area {area_km2:.2f} km²"
+    message["From"] = sender
+    message["To"] = recipient
+    message.set_content(
+        "\n".join([
+            "An analysis has triggered an authority alert.",
+            "",
+            f"Area (km²): {area_km2:.2f}",
+            f"Comparison period (years): {period_years}",
+            f"USS score: {uss_data['uss_score']} / 100", 
+            f"USS label: {uss_data['uss_label']}",
+            f"Vegetation change (%): {veg_percent}",
+            f"Urban change (%): {urban_percent}",
+            f"Water change (%): {water_percent}",
+            f"Temperature proxy (%): {uss_data['temperature_proxy_percent']}",
+            "",
+            "Trigger reasons:",
+            *[f"- {reason}" for reason in reasons],
+        ])
+    )
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(smtp_user, smtp_password)
+            server.send_message(message)
+    except Exception as exc:
+        print("Authority alert email failed:")
+        print(str(exc))
+        record_authority_alert(
+            analysis_id=None,
+            recipient_email=recipient,
+            reasons=reasons,
+            delivery_status="failed",
+            smtp_response=str(exc),
+        )
+        return {
+            "sent": False,
+            "delivery": "failed",
+            "recipient": recipient,
+            "reason": str(exc),
+        }
+
+    record_authority_alert(
+        analysis_id=None,
+        recipient_email=recipient,
+        reasons=reasons,
+        delivery_status="sent",
+        smtp_response=None,
+    )
+
+    return {
+        "sent": True,
+        "delivery": "sent",
+        "recipient": recipient,
+    }
+
+
+seed_default_admin_user()
 
 
 def compute_uss_score(vegetation_change_percent, urban_change_percent, water_change_percent):
@@ -177,6 +299,86 @@ Rules:
 
 
 initialize_earth_engine()
+
+
+@app.route("/auth/register", methods=["POST"])
+def auth_register():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        user = register_user(payload.get("name"), payload.get("email"), payload.get("password"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to register user: {str(exc)}"}), 500
+
+    return jsonify({"user": user, "status": "registered"})
+
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        user = authenticate_user(payload.get("email"), payload.get("password"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to login: {str(exc)}"}), 500
+
+    return jsonify({"user": user, "status": "authenticated"})
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    return jsonify({"status": "logged_out"})
+
+
+@app.route("/users/<user_id>/analyses", methods=["GET", "POST"])
+def user_analyses(user_id):
+    if request.method == "GET":
+        try:
+            analyses = get_user_analyses(user_id)
+        except Exception as exc:
+            return jsonify({"error": f"Failed to load analyses: {str(exc)}"}), 500
+
+        return jsonify({"analyses": analyses})
+
+    payload = request.get_json(silent=True) or {}
+    report_state = payload.get("reportState")
+    analysis_result = payload.get("analysisData") or (report_state or {}).get("analysisData") or {}
+
+    if not report_state:
+        return jsonify({"error": "reportState is required."}), 400
+
+    try:
+        saved = save_analysis_for_user(user_id, report_state, analysis_result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to save analysis: {str(exc)}"}), 500
+
+    return jsonify({"analysis": saved, "status": "saved"})
+
+
+@app.route("/admin/users", methods=["GET"])
+def admin_users():
+    try:
+        users = get_all_users_with_analyses()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load users: {str(exc)}"}), 500
+
+    return jsonify({"users": users})
+
+
+@app.route("/admin/analyses", methods=["GET"])
+def admin_analyses():
+    try:
+        analyses = get_all_analyses()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load analyses: {str(exc)}"}), 500
+
+    return jsonify({"analyses": analyses})
 
 # ---------------- SET COORDINATES ----------------
 
@@ -363,6 +565,26 @@ def run_analysis():
     print(f"USS Interpretation   : {uss_data['uss_interpretation']}")
     print("==========================================================\n")
 
+    alert_reasons = should_alert_authority(uss_data["uss_score"], veg_percent)
+    authority_alert = {
+        "triggered": bool(alert_reasons),
+        "reasons": alert_reasons,
+        "delivery": None,
+    }
+
+    if alert_reasons:
+        authority_alert.update(
+            send_authority_alert(
+                area_km2=round(area, 2),
+                period_years=period_years,
+                veg_percent=veg_percent,
+                urban_percent=urban_percent,
+                water_percent=water_percent,
+                uss_data=uss_data,
+                reasons=alert_reasons,
+            )
+        )
+
     return jsonify({
         "vegetation_change_percent": veg_percent,
         "urban_change_percent": urban_percent,
@@ -374,6 +596,7 @@ def run_analysis():
         "temperature_proxy_percent": uss_data["temperature_proxy_percent"],
         "period_years": period_years,
         "area_km2": round(area, 2),
+        "authority_alert": authority_alert,
         "status": "completed"
     })
 

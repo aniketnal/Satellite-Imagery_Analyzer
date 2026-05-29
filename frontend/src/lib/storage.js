@@ -1,13 +1,10 @@
-const USERS_KEY = 'sia_users'
+import axios from 'axios'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'
 const CURRENT_USER_KEY = 'user'
-const ANALYSES_KEY = 'sia_analyses'
 const HARDCODED_ADMIN = {
-  id: 'admin_001',
-  name: 'System Admin',
   email: 'admin@sia.local',
-  role: 'Administrator',
   password: 'admin123',
-  createdAt: '2026-01-01T00:00:00.000Z',
 }
 
 function safeParse(value, fallback) {
@@ -16,23 +13,6 @@ function safeParse(value, fallback) {
   } catch {
     return fallback
   }
-}
-
-function getUsers() {
-  const users = safeParse(localStorage.getItem(USERS_KEY), [])
-  const hasAdmin = users.some((u) => u.email === HARDCODED_ADMIN.email)
-
-  if (!hasAdmin) {
-    const nextUsers = [...users, HARDCODED_ADMIN]
-    saveUsers(nextUsers)
-    return nextUsers
-  }
-
-  return users
-}
-
-function saveUsers(users) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users))
 }
 
 function getCurrentUser() {
@@ -48,104 +28,69 @@ function normalizeEmail(email) {
 }
 
 export function registerUser({ name, email, password }) {
-  const trimmedName = (name || '').trim()
-  const normalizedEmail = normalizeEmail(email)
-  const rawPassword = (password || '').trim()
-
-  if (!trimmedName || !normalizedEmail || !rawPassword) {
-    return { ok: false, message: 'Please fill all required fields.' }
-  }
-
-  if (rawPassword.length < 6) {
-    return { ok: false, message: 'Password must be at least 6 characters.' }
-  }
-
-  const users = getUsers()
-  const exists = users.some((u) => u.email === normalizedEmail)
-  if (exists) {
-    return { ok: false, message: 'Account already exists for this email.' }
-  }
-
-  const newUser = {
-    id: `u_${Date.now()}`,
-    name: trimmedName,
-    email: normalizedEmail,
-    role: 'Planner',
-    password: rawPassword,
-    createdAt: new Date().toISOString(),
-  }
-
-  users.push(newUser)
-  saveUsers(users)
-
-  const sessionUser = {
-    id: newUser.id,
-    name: newUser.name,
-    email: newUser.email,
-    role: newUser.role,
-    createdAt: newUser.createdAt,
-  }
-  setCurrentUser(sessionUser)
-
-  return { ok: true, user: sessionUser }
+  return axios
+    .post(`${API_BASE}/auth/register`, {
+      name,
+      email: normalizeEmail(email),
+      password: (password || '').trim(),
+    })
+    .then((response) => {
+      const user = response.data?.user || null
+      if (user) setCurrentUser(user)
+      return { ok: true, user }
+    })
+    .catch((error) => ({
+      ok: false,
+      message: error?.response?.data?.error || 'Registration failed.',
+    }))
 }
 
-export function ensureHardcodedAdminAccount() {
-  getUsers()
+export async function ensureHardcodedAdminAccount() {
+  return true
 }
 
 export function loginUser({ email, password }) {
-  const normalizedEmail = normalizeEmail(email)
-  const rawPassword = (password || '').trim()
-
-  const users = getUsers()
-  const found = users.find((u) => u.email === normalizedEmail && u.password === rawPassword)
-
-  if (!found) {
-    return { ok: false, message: 'Invalid email or password.' }
-  }
-
-  const sessionUser = {
-    id: found.id,
-    name: found.name,
-    email: found.email,
-    role: found.role,
-    createdAt: found.createdAt,
-  }
-
-  setCurrentUser(sessionUser)
-  return { ok: true, user: sessionUser }
+  return axios
+    .post(`${API_BASE}/auth/login`, {
+      email: normalizeEmail(email),
+      password: (password || '').trim(),
+    })
+    .then((response) => {
+      const user = response.data?.user || null
+      if (user) setCurrentUser(user)
+      return { ok: true, user }
+    })
+    .catch((error) => ({
+      ok: false,
+      message: error?.response?.data?.error || 'Login failed.',
+    }))
 }
 
 export function logoutUser() {
+  axios.post(`${API_BASE}/auth/logout`).catch(() => {})
   localStorage.removeItem(CURRENT_USER_KEY)
 }
 
-export function getUserAnalyses(userId) {
-  const items = safeParse(localStorage.getItem(ANALYSES_KEY), [])
+export async function getUserAnalyses(userId) {
   if (!userId) return []
-  return items.filter((item) => item.userId === userId).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+
+  const response = await axios.get(`${API_BASE}/users/${userId}/analyses`)
+  return response.data?.analyses || []
 }
 
-export function saveAnalysisForUser(userId, reportState) {
+export async function saveAnalysisForUser(userId, reportState) {
   if (!userId || !reportState) return null
 
-  const items = safeParse(localStorage.getItem(ANALYSES_KEY), [])
-  const newItem = {
-    id: `a_${Date.now()}`,
-    userId,
-    createdAt: new Date().toISOString(),
+  const response = await axios.post(`${API_BASE}/users/${userId}/analyses`, {
     reportState,
-  }
+    analysisData: reportState.analysisData,
+  })
 
-  items.push(newItem)
-  localStorage.setItem(ANALYSES_KEY, JSON.stringify(items))
-
-  return newItem
+  return response.data?.analysis || null
 }
 
-export function getLatestAnalysis(userId) {
-  const items = getUserAnalyses(userId)
+export async function getLatestAnalysis(userId) {
+  const items = await getUserAnalyses(userId)
   return items.length > 0 ? items[0] : null
 }
 
@@ -157,32 +102,16 @@ export function isAdminUser(user) {
   return user?.role === 'Administrator'
 }
 
-export function getAllUsersWithAnalyses() {
-  const users = getUsers().map((user) => ({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    createdAt: user.createdAt,
-  }))
-
-  return users.map((user) => {
-    const analyses = getUserAnalyses(user.id)
-    return {
-      ...user,
-      analyses,
-      analysesCount: analyses.length,
-    }
-  })
+export async function getAllUsersWithAnalyses() {
+  const response = await axios.get(`${API_BASE}/admin/users`)
+  return response.data?.users || []
 }
 
-export function getAllAnalyses() {
-  return safeParse(localStorage.getItem(ANALYSES_KEY), []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+export async function getAllAnalyses() {
+  const response = await axios.get(`${API_BASE}/admin/analyses`)
+  return response.data?.analyses || []
 }
 
 export function getHardcodedAdminCredentials() {
-  return {
-    email: HARDCODED_ADMIN.email,
-    password: HARDCODED_ADMIN.password,
-  }
+  return HARDCODED_ADMIN
 }
