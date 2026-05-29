@@ -535,7 +535,7 @@ export default function ReportPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-blue-200 bg-blue-50/70">
+        {/* <Card className="border-blue-200 bg-blue-50/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               AI-Generated Insights
@@ -580,7 +580,7 @@ export default function ReportPage() {
               <p className="text-sm text-slate-600">Insights will appear here after the analysis data is prepared.</p>
             )}
           </CardContent>
-        </Card>
+        </Card> */}
 
         {/* Key Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
