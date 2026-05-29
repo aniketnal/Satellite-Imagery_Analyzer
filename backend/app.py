@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import ee
+import json
 import smtplib
 import os
 import ssl
@@ -239,63 +240,79 @@ def compute_uss_score(vegetation_change_percent, urban_change_percent, water_cha
 
 
 def get_gemini_insights(area_km2, period_years, vegetation_change, urban_change, water_change, uss_score=None, uss_label=None):
-    api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured on the server.")
-
     try:
-        genai = __import__("google.generativeai", fromlist=["GenerativeModel"])
-    except Exception:
-        raise ValueError("Gemini SDK is not installed on the server.")
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-
-    prompt = f"""
-You are an environmental planning analyst.
-Given this satellite change data, provide actionable insights.
-
-Area (km²): {area_km2}
-Comparison period (years): {period_years}
-Vegetation change (%): {vegetation_change}
-Urban change (%): {urban_change}
-Water change (%): {water_change}
-USS score (1-100): {uss_score if uss_score is not None else "not provided"}
-USS label: {uss_label if uss_label else "not provided"}
-
-Return strict JSON with this schema only:
-{{
-  "summary": "short 1-2 sentence interpretation",
-  "key_findings": ["3 to 5 concise findings"],
-  "recommendations": ["3 to 5 actionable recommendations"]
-}}
-
-Rules:
-- No markdown
-- No extra keys
-- Recommendations must be specific and practical for city planners
-        uss_score = payload.get("uss_score")
-        uss_label = payload.get("uss_label")
-"""
-
-
-    try:
-        uss_score = float(uss_score) if uss_score is not None else None
+        uss_score_value = float(uss_score) if uss_score is not None else None
     except (TypeError, ValueError):
-        uss_score = None
-    response = model.generate_content(prompt)
-    text = (response.text or "").strip()
+        uss_score_value = None
 
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-            water_change=water_change,
-            uss_score=uss_score,
-            uss_label=uss_label
-    return text
+    uss_score_value = round(uss_score_value, 2) if uss_score_value is not None else None
+    uss_label_value = uss_label or "Sustainability score"
+
+    if uss_score_value is None:
+        if vegetation_change >= 0 and urban_change <= 0 and water_change >= 0:
+            score_meaning = "Conditions are relatively balanced with limited environmental stress."
+        else:
+            score_meaning = "The score reflects a mixed land-cover condition with room for sustainability improvements."
+    elif uss_score_value >= 80:
+        score_meaning = "Very sustainable: green cover and water conditions are strong relative to urban pressure."
+    elif uss_score_value >= 60:
+        score_meaning = "Moderately sustainable: the area is performing reasonably well, but pressure from urbanization is visible."
+    elif uss_score_value >= 40:
+        score_meaning = "Mixed sustainability: positive and negative land-cover changes are roughly balancing each other out."
+    elif uss_score_value >= 20:
+        score_meaning = "Low sustainability: the area shows clear pressure from urban growth or vegetation loss."
+    else:
+        score_meaning = "Poor sustainability: strong environmental stress is visible and immediate action is needed."
+
+    vegetation_abs = abs(float(vegetation_change))
+    urban_abs = abs(float(urban_change))
+    water_abs = abs(float(water_change))
+    period_text = f"{period_years} year{'s' if period_years != 1 else ''}"
+
+    key_findings = [
+        (
+            f"Vegetation changed by {vegetation_change:.2f}% across the selected {area_km2:.2f} km² area over {period_text}, "
+            f"which points to {'loss' if vegetation_change < 0 else 'gain'} in green cover."
+        ),
+        (
+            f"Urban development shifted by {urban_change:.2f}%, showing {'expansion' if urban_change > 0 else 'limited growth or stabilisation'} "
+            f"of built-up pressure in the area."
+        ),
+        (
+            f"Water bodies changed by {water_change:.2f}%, suggesting {'reduced' if water_change < 0 else 'improved'} surface water availability."
+        ),
+        (
+            f"USS {uss_score_value if uss_score_value is not None else 'N/A'}/100 means {score_meaning.lower()}"
+        ),
+        (
+            f"The temperature-pressure proxy increases when urban expansion outpaces vegetation recovery, which can amplify heat stress and runoff."
+        ),
+    ]
+
+    recommendations = [
+        vegetation_change < 0
+        and f"Protect and replant vegetation in the most affected pockets to recover at least part of the {vegetation_abs:.2f}% loss."
+        or f"Preserve the current vegetation trend and use it as a baseline for future land-cover monitoring.",
+        urban_change > 0
+        and f"Review zoning, building density, and transport planning so the {urban_abs:.2f}% urban increase does not spread unchecked."
+        or f"Keep urban growth under watch and prioritise compact development instead of outward sprawl.",
+        water_change < 0
+        and f"Audit drainage, encroachment, and seasonal water stress where the {water_abs:.2f}% water loss is visible."
+        or f"Protect existing water bodies and create buffers so the current water gain remains stable.",
+        f"Use the USS {uss_score_value if uss_score_value is not None else 'N/A'}/100 as a planning benchmark: scores below 40 need urgent intervention, 40-59 need active mitigation, and 60+ should be maintained.",
+        f"Pair satellite findings with on-ground verification in the mapped {area_km2:.2f} km² area before final development decisions."
+    ]
+
+    return json.dumps({
+        "summary": (
+            f"The selected area has a USS of {uss_score_value if uss_score_value is not None else 'N/A'}/100. "
+            f"{score_meaning} Vegetation, urban, and water trends indicate a {period_text} land-cover shift that should be managed through targeted sustainability actions."
+        ),
+        "score_meaning": score_meaning,
+        "uss_label": uss_label_value,
+        "key_findings": key_findings,
+        "recommendations": recommendations,
+    })
 
 
 initialize_earth_engine()
