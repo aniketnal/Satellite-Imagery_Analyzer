@@ -4,7 +4,7 @@ import { Button } from '@/components/Button'
 import { Input } from '@/components/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/Card'
 import { Satellite, Mail, Lock, User, Github } from 'lucide-react'
-import { ensureHardcodedAdminAccount, getCurrentUserSafe, getHardcodedAdminCredentials, loginUser, registerUser } from '@/lib/storage'
+import { ensureHardcodedAdminAccount, getCurrentUserSafe, loginUser, registerUser } from '@/lib/storage'
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true)
@@ -13,7 +13,6 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const navigate = useNavigate()
-  const adminCreds = getHardcodedAdminCredentials()
 
   useEffect(() => {
     ensureHardcodedAdminAccount()
@@ -28,14 +27,14 @@ export default function AuthPage() {
     setError('')
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
 
     setError('')
 
     const result = isLogin
-      ? loginUser({ email, password })
-      : registerUser({ name, email, password })
+      ? await loginUser({ email, password })
+      : await registerUser({ name, email, password })
 
     if (!result.ok) {
       setError(result.message)
@@ -96,9 +95,6 @@ export default function AuthPage() {
             {error ? (
               <p className="text-sm text-red-400 text-center">{error}</p>
             ) : null}
-            <p className="text-xs text-slate-400 text-center">
-              Admin login: {adminCreds.email} / {adminCreds.password}
-            </p>
           </CardHeader>
           
           <CardContent className="space-y-4">

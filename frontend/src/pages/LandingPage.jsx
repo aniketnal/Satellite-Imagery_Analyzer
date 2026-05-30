@@ -1,15 +1,26 @@
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Satellite, Globe, TrendingUp, MapPin } from 'lucide-react'
+import { getCurrentUserSafe, logoutUser } from '@/lib/storage'
 
 export default function LandingPage() {
   const navigate = useNavigate()
+  const user = getCurrentUserSafe()
 
   const scrollToFeatures = () => {
     const featuresSection = document.getElementById('features')
     if (featuresSection) {
       featuresSection.scrollIntoView({ behavior: 'smooth' })
     }
+  }
+
+  const handlePrimaryAction = () => {
+    navigate(user?.id ? '/dashboard' : '/auth')
+  }
+
+  const handleLogout = () => {
+    logoutUser()
+    navigate('/')
   }
 
   return (
@@ -21,13 +32,37 @@ export default function LandingPage() {
             <Satellite className="h-8 w-8 text-blue-400" />
             <span className="text-xl font-bold tracking-tight">Satellite Imagery Analyzer</span>
           </div>
-          <Button 
-            onClick={() => navigate('/auth')}
-            variant="outline"
-            className="border-white/20 text-white hover:bg-white/10 bg-white/5"
-          >
-            Sign In
-          </Button>
+          <div className="flex items-center gap-3">
+            {user?.id ? (
+              <>
+                <div className="hidden sm:block text-right">
+                  <div className="text-sm font-semibold text-white">{user.name}</div>
+                  <div className="text-xs text-slate-300">{user.role}</div>
+                </div>
+                <Button
+                  onClick={() => navigate('/dashboard')}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  Dashboard
+                </Button>
+                <Button
+                  onClick={handleLogout}
+                  variant="outline"
+                  className="border-white/20 text-white hover:bg-white/10 bg-white/5"
+                >
+                  Log Out
+                </Button>
+              </>
+            ) : (
+              <Button 
+                onClick={() => navigate('/auth')}
+                variant="outline"
+                className="border-white/20 text-white hover:bg-white/10 bg-white/5"
+              >
+                Sign In
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -37,7 +72,7 @@ export default function LandingPage() {
           {/* Left Column - Text */}
           <div className="space-y-8 animate-fade-in">
             <div className="inline-block px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-full text-sm text-blue-300 font-medium">
-              Professional Geospatial Analysis Platform
+              {user?.id ? `Signed in as ${user.name}` : 'Professional Geospatial Analysis Platform'}
             </div>
             
             <h1 className="text-5xl lg:text-6xl font-bold leading-tight">
@@ -52,11 +87,11 @@ export default function LandingPage() {
 
             <div className="flex gap-4 pt-4 relative z-20">
               <Button 
-                onClick={() => navigate('/auth')}
+                onClick={handlePrimaryAction}
                 size="lg"
                 className="bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-lg hover:shadow-blue-500/50 transition-all cursor-pointer"
               >
-                Get Started →
+                {user?.id ? 'Open Dashboard →' : 'Get Started →'}
               </Button>
               <Button 
                 onClick={scrollToFeatures}
@@ -150,11 +185,11 @@ export default function LandingPage() {
 
           <div className="text-center mt-12">
             <Button 
-              onClick={() => navigate('/auth')}
+              onClick={handlePrimaryAction}
               size="lg"
               className="bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-lg"
             >
-              Start Analyzing Now →
+              {user?.id ? 'Go to Dashboard →' : 'Start Analyzing Now →'}
             </Button>
           </div>
         </div>

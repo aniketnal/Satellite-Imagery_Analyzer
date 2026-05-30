@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/Card'
@@ -8,7 +8,25 @@ import { getCurrentUserSafe, getUserAnalyses, isAdminUser } from '@/lib/storage'
 export default function ProfilePage() {
   const navigate = useNavigate()
   const user = getCurrentUserSafe() || {}
-  const analyses = useMemo(() => getUserAnalyses(user.id), [user.id])
+  const [analyses, setAnalyses] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!user.id) return undefined
+
+    getUserAnalyses(user.id)
+      .then((items) => {
+        if (!cancelled) setAnalyses(items)
+      })
+      .catch(() => {
+        if (!cancelled) setAnalyses([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [user.id])
 
   const totalAnalyses = analyses.length
   const totalReports = analyses.length

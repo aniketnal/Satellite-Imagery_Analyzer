@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/Card'
@@ -8,8 +8,28 @@ import { getAllAnalyses, getAllUsersWithAnalyses } from '@/lib/storage'
 export default function AdminPage() {
   const navigate = useNavigate()
 
-  const users = useMemo(() => getAllUsersWithAnalyses(), [])
-  const allAnalyses = useMemo(() => getAllAnalyses(), [])
+  const [users, setUsers] = useState([])
+  const [allAnalyses, setAllAnalyses] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    Promise.all([getAllUsersWithAnalyses(), getAllAnalyses()])
+      .then(([nextUsers, nextAnalyses]) => {
+        if (cancelled) return
+        setUsers(nextUsers)
+        setAllAnalyses(nextAnalyses)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setUsers([])
+        setAllAnalyses([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const openSavedReport = (reportState) => {
     if (!reportState) return

@@ -1,9 +1,23 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import ee
+import json
+import smtplib
 import os
+import ssl
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from dotenv import load_dotenv
+from supabase_db import (
+    authenticate_user,
+    get_all_analyses,
+    get_all_users_with_analyses,
+    get_user_analyses,
+    record_authority_alert,
+    register_user,
+    save_analysis_for_user,
+    seed_default_admin_user,
+)
 
 load_dotenv()
 
@@ -62,6 +76,115 @@ def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
 
 
+def _safe_float_env(name, default):
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def should_alert_authority(uss_score, vegetation_change_percent):
+    uss_threshold = _safe_float_env("AUTHORITY_ALERT_USS_THRESHOLD", "1")
+    deforestation_threshold = _safe_float_env("AUTHORITY_ALERT_DEFORESTATION_THRESHOLD", "-10")
+
+    reasons = []
+    if uss_score is not None and uss_score <= uss_threshold:
+        reasons.append(
+            f"USS score {uss_score} is at or below the configured alert threshold {uss_threshold}."
+        )
+
+    if vegetation_change_percent is not None and vegetation_change_percent <= deforestation_threshold:
+        reasons.append(
+            f"Vegetation change {vegetation_change_percent}% indicates heavy deforestation (threshold {deforestation_threshold}%)."
+        )
+
+    return reasons
+
+
+def send_authority_alert(*, area_km2, period_years, veg_percent, urban_percent, water_percent, uss_data, reasons):
+    recipient = os.getenv("AUTHORITY_ALERT_EMAIL", "nmc@gov.in")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_host = "smtp.gmail.com"
+    smtp_port = 587
+    sender = smtp_user or "no-reply@satellite-imagery-analyzer.local"
+
+    if not smtp_user or not smtp_password:
+        record_authority_alert(
+            analysis_id=None,
+            recipient_email=recipient,
+            reasons=reasons,
+            delivery_status="skipped",
+            smtp_response="SMTP_USER and SMTP_PASSWORD must be configured to send alerts.",
+        )
+        return {
+            "sent": False,
+            "delivery": "skipped",
+            "reason": "SMTP_USER and SMTP_PASSWORD must be configured to send alerts.",
+        }
+
+    message = EmailMessage()
+    message["Subject"] = f"[Satellite Imagery Analyzer] Authority alert for area {area_km2:.2f} km²"
+    message["From"] = sender
+    message["To"] = recipient
+    message.set_content(
+        "\n".join([
+            "An analysis has triggered an authority alert.",
+            "",
+            f"Area (km²): {area_km2:.2f}",
+            f"Comparison period (years): {period_years}",
+            f"USS score: {uss_data['uss_score']} / 100", 
+            f"USS label: {uss_data['uss_label']}",
+            f"Vegetation change (%): {veg_percent}",
+            f"Urban change (%): {urban_percent}",
+            f"Water change (%): {water_percent}",
+            f"Temperature proxy (%): {uss_data['temperature_proxy_percent']}",
+            "",
+            "Trigger reasons:",
+            *[f"- {reason}" for reason in reasons],
+        ])
+    )
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(smtp_user, smtp_password)
+            server.send_message(message)
+    except Exception as exc:
+        print("Authority alert email failed:")
+        print(str(exc))
+        record_authority_alert(
+            analysis_id=None,
+            recipient_email=recipient,
+            reasons=reasons,
+            delivery_status="failed",
+            smtp_response=str(exc),
+        )
+        return {
+            "sent": False,
+            "delivery": "failed",
+            "recipient": recipient,
+            "reason": str(exc),
+        }
+
+    record_authority_alert(
+        analysis_id=None,
+        recipient_email=recipient,
+        reasons=reasons,
+        delivery_status="sent",
+        smtp_response=None,
+    )
+
+    return {
+        "sent": True,
+        "delivery": "sent",
+        "recipient": recipient,
+    }
+
+
+seed_default_admin_user()
+
+
 def compute_uss_score(vegetation_change_percent, urban_change_percent, water_change_percent):
     """
     Compute a USS (Urban Sustainability Score) on a 1-100 scale.
@@ -117,66 +240,162 @@ def compute_uss_score(vegetation_change_percent, urban_change_percent, water_cha
 
 
 def get_gemini_insights(area_km2, period_years, vegetation_change, urban_change, water_change, uss_score=None, uss_label=None):
-    api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured on the server.")
-
     try:
-        genai = __import__("google.generativeai", fromlist=["GenerativeModel"])
-    except Exception:
-        raise ValueError("Gemini SDK is not installed on the server.")
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-
-    prompt = f"""
-You are an environmental planning analyst.
-Given this satellite change data, provide actionable insights.
-
-Area (km²): {area_km2}
-Comparison period (years): {period_years}
-Vegetation change (%): {vegetation_change}
-Urban change (%): {urban_change}
-Water change (%): {water_change}
-USS score (1-100): {uss_score if uss_score is not None else "not provided"}
-USS label: {uss_label if uss_label else "not provided"}
-
-Return strict JSON with this schema only:
-{{
-  "summary": "short 1-2 sentence interpretation",
-  "key_findings": ["3 to 5 concise findings"],
-  "recommendations": ["3 to 5 actionable recommendations"]
-}}
-
-Rules:
-- No markdown
-- No extra keys
-- Recommendations must be specific and practical for city planners
-        uss_score = payload.get("uss_score")
-        uss_label = payload.get("uss_label")
-"""
-
-
-    try:
-        uss_score = float(uss_score) if uss_score is not None else None
+        uss_score_value = float(uss_score) if uss_score is not None else None
     except (TypeError, ValueError):
-        uss_score = None
-    response = model.generate_content(prompt)
-    text = (response.text or "").strip()
+        uss_score_value = None
 
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-            water_change=water_change,
-            uss_score=uss_score,
-            uss_label=uss_label
-    return text
+    uss_score_value = round(uss_score_value, 2) if uss_score_value is not None else None
+    uss_label_value = uss_label or "Sustainability score"
+
+    if uss_score_value is None:
+        if vegetation_change >= 0 and urban_change <= 0 and water_change >= 0:
+            score_meaning = "Conditions are relatively balanced with limited environmental stress."
+        else:
+            score_meaning = "The score reflects a mixed land-cover condition with room for sustainability improvements."
+    elif uss_score_value >= 80:
+        score_meaning = "Very sustainable: green cover and water conditions are strong relative to urban pressure."
+    elif uss_score_value >= 60:
+        score_meaning = "Moderately sustainable: the area is performing reasonably well, but pressure from urbanization is visible."
+    elif uss_score_value >= 40:
+        score_meaning = "Mixed sustainability: positive and negative land-cover changes are roughly balancing each other out."
+    elif uss_score_value >= 20:
+        score_meaning = "Low sustainability: the area shows clear pressure from urban growth or vegetation loss."
+    else:
+        score_meaning = "Poor sustainability: strong environmental stress is visible and immediate action is needed."
+
+    vegetation_abs = abs(float(vegetation_change))
+    urban_abs = abs(float(urban_change))
+    water_abs = abs(float(water_change))
+    period_text = f"{period_years} year{'s' if period_years != 1 else ''}"
+
+    key_findings = [
+        (
+            f"Vegetation changed by {vegetation_change:.2f}% across the selected {area_km2:.2f} km² area over {period_text}, "
+            f"which points to {'loss' if vegetation_change < 0 else 'gain'} in green cover."
+        ),
+        (
+            f"Urban development shifted by {urban_change:.2f}%, showing {'expansion' if urban_change > 0 else 'limited growth or stabilisation'} "
+            f"of built-up pressure in the area."
+        ),
+        (
+            f"Water bodies changed by {water_change:.2f}%, suggesting {'reduced' if water_change < 0 else 'improved'} surface water availability."
+        ),
+        (
+            f"USS {uss_score_value if uss_score_value is not None else 'N/A'}/100 means {score_meaning.lower()}"
+        ),
+        (
+            f"The temperature-pressure proxy increases when urban expansion outpaces vegetation recovery, which can amplify heat stress and runoff."
+        ),
+    ]
+
+    recommendations = [
+        vegetation_change < 0
+        and f"Protect and replant vegetation in the most affected pockets to recover at least part of the {vegetation_abs:.2f}% loss."
+        or f"Preserve the current vegetation trend and use it as a baseline for future land-cover monitoring.",
+        urban_change > 0
+        and f"Review zoning, building density, and transport planning so the {urban_abs:.2f}% urban increase does not spread unchecked."
+        or f"Keep urban growth under watch and prioritise compact development instead of outward sprawl.",
+        water_change < 0
+        and f"Audit drainage, encroachment, and seasonal water stress where the {water_abs:.2f}% water loss is visible."
+        or f"Protect existing water bodies and create buffers so the current water gain remains stable.",
+        f"Use the USS {uss_score_value if uss_score_value is not None else 'N/A'}/100 as a planning benchmark: scores below 40 need urgent intervention, 40-59 need active mitigation, and 60+ should be maintained.",
+        f"Pair satellite findings with on-ground verification in the mapped {area_km2:.2f} km² area before final development decisions."
+    ]
+
+    return json.dumps({
+        "summary": (
+            f"The selected area has a USS of {uss_score_value if uss_score_value is not None else 'N/A'}/100. "
+            f"{score_meaning} Vegetation, urban, and water trends indicate a {period_text} land-cover shift that should be managed through targeted sustainability actions."
+        ),
+        "score_meaning": score_meaning,
+        "uss_label": uss_label_value,
+        "key_findings": key_findings,
+        "recommendations": recommendations,
+    })
 
 
 initialize_earth_engine()
+
+
+@app.route("/auth/register", methods=["POST"])
+def auth_register():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        user = register_user(payload.get("name"), payload.get("email"), payload.get("password"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to register user: {str(exc)}"}), 500
+
+    return jsonify({"user": user, "status": "registered"})
+
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        user = authenticate_user(payload.get("email"), payload.get("password"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to login: {str(exc)}"}), 500
+
+    return jsonify({"user": user, "status": "authenticated"})
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    return jsonify({"status": "logged_out"})
+
+
+@app.route("/users/<user_id>/analyses", methods=["GET", "POST"])
+def user_analyses(user_id):
+    if request.method == "GET":
+        try:
+            analyses = get_user_analyses(user_id)
+        except Exception as exc:
+            return jsonify({"error": f"Failed to load analyses: {str(exc)}"}), 500
+
+        return jsonify({"analyses": analyses})
+
+    payload = request.get_json(silent=True) or {}
+    report_state = payload.get("reportState")
+    analysis_result = payload.get("analysisData") or (report_state or {}).get("analysisData") or {}
+
+    if not report_state:
+        return jsonify({"error": "reportState is required."}), 400
+
+    try:
+        saved = save_analysis_for_user(user_id, report_state, analysis_result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to save analysis: {str(exc)}"}), 500
+
+    return jsonify({"analysis": saved, "status": "saved"})
+
+
+@app.route("/admin/users", methods=["GET"])
+def admin_users():
+    try:
+        users = get_all_users_with_analyses()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load users: {str(exc)}"}), 500
+
+    return jsonify({"users": users})
+
+
+@app.route("/admin/analyses", methods=["GET"])
+def admin_analyses():
+    try:
+        analyses = get_all_analyses()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load analyses: {str(exc)}"}), 500
+
+    return jsonify({"analyses": analyses})
 
 # ---------------- SET COORDINATES ----------------
 
@@ -363,6 +582,26 @@ def run_analysis():
     print(f"USS Interpretation   : {uss_data['uss_interpretation']}")
     print("==========================================================\n")
 
+    alert_reasons = should_alert_authority(uss_data["uss_score"], veg_percent)
+    authority_alert = {
+        "triggered": bool(alert_reasons),
+        "reasons": alert_reasons,
+        "delivery": None,
+    }
+
+    if alert_reasons:
+        authority_alert.update(
+            send_authority_alert(
+                area_km2=round(area, 2),
+                period_years=period_years,
+                veg_percent=veg_percent,
+                urban_percent=urban_percent,
+                water_percent=water_percent,
+                uss_data=uss_data,
+                reasons=alert_reasons,
+            )
+        )
+
     return jsonify({
         "vegetation_change_percent": veg_percent,
         "urban_change_percent": urban_percent,
@@ -374,6 +613,7 @@ def run_analysis():
         "temperature_proxy_percent": uss_data["temperature_proxy_percent"],
         "period_years": period_years,
         "area_km2": round(area, 2),
+        "authority_alert": authority_alert,
         "status": "completed"
     })
 

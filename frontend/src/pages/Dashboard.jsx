@@ -10,6 +10,8 @@ import { getCurrentUserSafe, getLatestAnalysis, getUserAnalyses, isAdminUser, lo
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-draw/dist/leaflet.draw.css'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'
+
 // Fix default marker icons
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -107,22 +109,52 @@ export default function Dashboard() {
   })
   const [drawnShapes, setDrawnShapes] = useState([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
 
   const user = getCurrentUserSafe() || {}
   const [analysisCount, setAnalysisCount] = useState(0)
 
   useEffect(() => {
-    if (!user.id) return
-    setAnalysisCount(getUserAnalyses(user.id).length)
+    let cancelled = false
+
+    if (!user.id) return undefined
+
+    getUserAnalyses(user.id)
+      .then((items) => {
+        if (!cancelled) setAnalysisCount(items.length)
+      })
+      .catch(() => {
+        if (!cancelled) setAnalysisCount(0)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [user.id])
+
+  useEffect(() => {
+    if (!isAnalyzing) return undefined
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault()
+      event.returnValue = ''
+      return ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [isAnalyzing])
 
   const handleLogout = () => {
     logoutUser()
     navigate('/')
   }
 
-  const handleOpenLatest = () => {
-    const latest = getLatestAnalysis(user.id)
+  const handleOpenLatest = async () => {
+    const latest = await getLatestAnalysis(user.id)
     if (!latest?.reportState) {
       alert('No saved analysis found yet.')
       return
@@ -163,29 +195,32 @@ export default function Dashboard() {
     console.log('Time Period:', timePeriod === 'current' ? 'Current' : `Last ${timePeriod} Years`)
     console.log('==========================================================')
 
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 120000)
+    let loadingAlert = null
+
     try {
-      // Show loading state
-      const loadingAlert = document.createElement('div')
+      setIsAnalyzing(true)
+      loadingAlert = document.createElement('div')
       loadingAlert.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]'
       loadingAlert.innerHTML = '<div class="bg-white rounded-lg p-6 text-center"><div class="animate-spin h-12 w-12 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div><p>Analyzing satellite data...</p></div>'
       document.body.appendChild(loadingAlert)
 
       // Call backend API for analysis
-      const response = await fetch('http://localhost:5000/run-analysis', {
+      const response = await fetch(`${API_BASE}/run-analysis`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: controller.signal,
         body: JSON.stringify({
           coordinates: latestShape.points,
           period: timePeriod
         })
       })
 
-      document.body.removeChild(loadingAlert)
-
       if (!response.ok) {
-        const error = await response.json()
+        const error = await response.json().catch(() => ({}))
         alert(error.error || 'Analysis failed')
         return
       }
@@ -203,7 +238,7 @@ export default function Dashboard() {
         analysisData,
       }
 
-      saveAnalysisForUser(user.id, reportState)
+      await saveAnalysisForUser(user.id, reportState)
       setAnalysisCount((prev) => prev + 1)
 
       // Navigate to report page with analysis data
@@ -211,12 +246,18 @@ export default function Dashboard() {
         state: reportState
       })
     } catch (error) {
-      // Remove loading if it exists
-      const loading = document.querySelector('.fixed.inset-0.bg-black\\/50')
-      if (loading) document.body.removeChild(loading)
-      
       console.error('Analysis error:', error)
-      alert('Failed to connect to analysis server. Make sure the backend is running on http://localhost:5000')
+      if (error?.name === 'AbortError') {
+        alert('Analysis timed out. Please try again with a smaller area or wait a moment.')
+      } else {
+        alert(`Failed to connect to analysis server. Make sure the backend is running on ${API_BASE}`)
+      }
+    } finally {
+      window.clearTimeout(timeoutId)
+      setIsAnalyzing(false)
+      if (loadingAlert?.isConnected) {
+        document.body.removeChild(loadingAlert)
+      }
     }
   }
 
