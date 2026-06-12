@@ -106,6 +106,7 @@ export default function ReportPage() {
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [loadingImages, setLoadingImages] = useState(false)
   const [downloadingPDF, setDownloadingPDF] = useState(false)
+  const [comparisonSplit, setComparisonSplit] = useState(50)
 
   useEffect(() => {
     if (!area || !params || !period) {
@@ -461,6 +462,10 @@ export default function ReportPage() {
   const ussScoreColor = ussScore >= 80 ? 'text-emerald-600' : ussScore >= 60 ? 'text-green-600' : ussScore >= 40 ? 'text-amber-600' : 'text-red-600'
   const ussScoreBg = ussScore >= 80 ? 'bg-emerald-100' : ussScore >= 60 ? 'bg-green-100' : ussScore >= 40 ? 'bg-amber-100' : 'bg-red-100'
   const insightPreview = insights || buildInsightPreview(analysisData, ussLabel, ussInterpretation)
+  const orderedImages = [...multiImages].sort((left, right) => Number(left.years_ago ?? 0) - Number(right.years_ago ?? 0))
+  const latestImage = orderedImages.find((image) => Number(image.years_ago ?? 0) === 0) || orderedImages[0] || null
+  const oldestImage = orderedImages.length > 0 ? orderedImages[orderedImages.length - 1] : null
+  const hasComparisonImages = Boolean(latestImage?.preview && oldestImage?.preview)
 
   const changeData = [
     { name: 'Vegetation', value: analysisData.vegetation_change_percent, color: analysisData.vegetation_change_percent < 0 ? '#ef4444' : '#10b981' },
@@ -764,6 +769,68 @@ export default function ReportPage() {
                     </a>
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {hasComparisonImages ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Image Comparison Slider</CardTitle>
+              <p className="text-sm text-slate-500">Compare the latest capture with the oldest available image from the selected period.</p>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 aspect-[16/9] shadow-sm">
+                  <img
+                    src={oldestImage.preview}
+                    alt={`Oldest available image from ${oldestImage.years_ago} years ago`}
+                    className="absolute inset-0 h-full w-full object-cover"
+                    onError={(e) => {
+                      e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675"><rect width="100%" height="100%" fill="%23e2e8f0"/><text x="50%" y="50%" text-anchor="middle" fill="%2364748b" font-family="Arial, sans-serif" font-size="28">Image unavailable</text></svg>'
+                    }}
+                  />
+                  <div
+                    className="absolute inset-y-0 left-0 overflow-hidden border-r-2 border-white/90 shadow-[6px_0_24px_rgba(15,23,42,0.25)]"
+                    style={{ width: `${comparisonSplit}%` }}
+                  >
+                    <img
+                      src={latestImage.preview}
+                      alt="Latest available image"
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675"><rect width="100%" height="100%" fill="%23cbd5e1"/><text x="50%" y="50%" text-anchor="middle" fill="%23334155" font-family="Arial, sans-serif" font-size="28">Image unavailable</text></svg>'
+                      }}
+                    />
+                  </div>
+                  <div className="absolute inset-x-0 top-0 flex items-center justify-between p-4 text-xs font-semibold uppercase tracking-[0.2em] text-white">
+                    <span className="rounded-full bg-slate-900/70 px-3 py-1 backdrop-blur">Oldest available</span>
+                    <span className="rounded-full bg-blue-600/80 px-3 py-1 backdrop-blur">Latest capture</span>
+                  </div>
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-white shadow-lg"
+                    style={{ left: `${comparisonSplit}%` }}
+                  >
+                    <div className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full border-4 border-white bg-blue-600 shadow-xl" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={comparisonSplit}
+                    onChange={(e) => setComparisonSplit(Number(e.target.value))}
+                    className="w-full accent-blue-600"
+                    aria-label="Adjust comparison slider"
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>Oldest available ({oldestImage.years_ago} years ago)</span>
+                    <span>Latest image</span>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
