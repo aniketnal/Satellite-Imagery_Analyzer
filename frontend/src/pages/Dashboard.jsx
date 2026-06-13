@@ -370,7 +370,6 @@ export default function Dashboard() {
                   <option value="3">Last 3 Years</option>
                   <option value="5">Last 5 Years</option>
                   <option value="7">Last 7 Years</option>
-                  <option value="10">Last 10 Years</option>
                 </select>
               </CardContent>
             </Card>

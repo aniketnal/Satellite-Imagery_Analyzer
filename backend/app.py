@@ -448,7 +448,7 @@ def get_multi_image():
     if stored_geometry is None:
         return jsonify({"error": "geometry not set"}), 400
 
-    year_offsets = [0, 3, 5, 7, 10]
+    year_offsets = [0, 3, 5, 7]
     today = datetime.today()
     previews = []
 
@@ -457,14 +457,8 @@ def get_multi_image():
         end = today - timedelta(days=365 * offset)
         start = end - timedelta(days=365)
 
-        if offset <= 7:
-            collection_id = "COPERNICUS/S2_SR_HARMONIZED"
-            bands = ["B4", "B3", "B2"]
-            scale = 60
-        else:
-            collection_id = "LANDSAT/LC08/C02/T1_L2"
-            bands = ["SR_B4", "SR_B3", "SR_B2"]
-            scale = 120
+        collection_id = "COPERNICUS/S2_SR_HARMONIZED"
+        bands = ["B4", "B3", "B2"]
 
         collection = ee.ImageCollection(collection_id) \
             .filterBounds(stored_geometry) \
